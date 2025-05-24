@@ -120,4 +120,3 @@ impl RestClient {
         Ok(data)
     }
 }
-
