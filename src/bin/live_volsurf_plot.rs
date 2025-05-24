@@ -30,9 +30,16 @@ struct PlotData {
 struct VolatilitySurfaceApp {
     ticker_input: String,
     status: String,
-    ticker_sender: mpsc::Sender<String>,
+    ticker_sender: mpsc::Sender<(String, DataSource)>,
     plot_receiver: mpsc::Receiver<PlotData>,
     plots: PlotImages,
+    data_source: DataSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DataSource {
+    LiveUpdates,
+    MostRecentOptionsChain,
 }
 
 impl eframe::App for VolatilitySurfaceApp {
@@ -58,16 +65,30 @@ impl eframe::App for VolatilitySurfaceApp {
             ui.horizontal(|ui| {
                 ui.label("Ticker Symbol:");
                 ui.text_edit_singleline(&mut self.ticker_input);
+            });
 
+            ui.horizontal(|ui| {
+                ui.label("Data Source:");
+                ui.radio_value(&mut self.data_source, DataSource::LiveUpdates, "Live Updates (placeholder)");
+                ui.radio_value(&mut self.data_source, DataSource::MostRecentOptionsChain, "Most Recent Options Chain");
+            });
+
+            ui.horizontal(|ui| {
                 if ui.button("Plot Volatility Surface").clicked() {
                     if self.ticker_input.trim().is_empty() {
                         self.status = "Please enter a ticker symbol".to_string();
                     } else {
                         let ticker = self.ticker_input.trim().to_uppercase();
-                        self.status =
-                            format!("Starting volatility surface plotting for {}", ticker);
+                        let data_source_str = match self.data_source {
+                            DataSource::LiveUpdates => "live updates",
+                            DataSource::MostRecentOptionsChain => "most recent options chain",
+                        };
+                        self.status = format!(
+                            "Starting volatility surface plotting for {} using {}",
+                            ticker, data_source_str
+                        );
 
-                        if let Err(e) = self.ticker_sender.try_send(ticker) {
+                        if let Err(e) = self.ticker_sender.try_send((ticker, self.data_source)) {
                             self.status = format!("Error: {}", e);
                         }
                     }
@@ -154,18 +175,29 @@ pub fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
 async fn run_volatility_surface_plot(
     symbol: &str,
     plot_sender: mpsc::Sender<PlotData>,
+    data_source: DataSource,
 ) -> Result<()> {
     let config = Config::from_env()?;
 
-    info!(
-        "Starting real-time volatility surface monitor for {}",
-        symbol
-    );
+    match data_source {
+        DataSource::LiveUpdates => {
+            info!(
+                "Starting real-time volatility surface monitor for {} (placeholder)",
+                symbol
+            );
+        },
+        DataSource::MostRecentOptionsChain => {
+            info!(
+                "Starting most recent options chain volatility surface for {}",
+                symbol
+            );
+        }
+    }
 
     let rest_client = Arc::new(RestClient::new(config.alpaca.clone()));
-    let ws_client = WebSocketClient::new(config.alpaca.clone());
 
-    info!("Fetching initial options chain for {}", symbol);
+    // Get option contracts for the symbol
+    info!("Fetching options chain for {}", symbol);
     let options_data = rest_client
         .get_options_chain(
             symbol, None, // expiration_date
@@ -196,47 +228,114 @@ async fn run_volatility_surface_plot(
         std::fs::create_dir(output_dir)?;
     }
 
-    info!(
-        "Connecting to WebSocket for {} option symbols",
-        option_symbols.len()
-    );
-    ws_client.connect(option_symbols.clone()).await?;
+    // Different data fetching strategies based on the data source
+    match data_source {
+        DataSource::LiveUpdates => {
+            // This is a placeholder for live updates
+            // For now, we'll use the existing WebSocket implementation
+            let ws_client = WebSocketClient::new(config.alpaca.clone());
 
-    let quotes_clone = latest_quotes.clone();
-    let quote_task = tokio::spawn(async move {
-        info!("Starting quote collection task");
-        let mut notification_rx = ws_client.get_notification_channel();
-        let batch_size = 50;
+            info!(
+                "Connecting to WebSocket for {} option symbols",
+                option_symbols.len()
+            );
+            ws_client.connect(option_symbols.clone()).await?;
 
-        loop {
-            match ws_client.next_option_quotes_batch(batch_size).await {
-                Ok(batch) => {
-                    if !batch.is_empty() {
-                        let batch_len = batch.len();
-                        let mut quotes = quotes_clone.write().await;
-                        for quote in batch {
-                            quotes.insert(quote.contract.option_symbol.clone(), quote);
+            let quotes_clone = latest_quotes.clone();
+            let quote_task = tokio::spawn(async move {
+                info!("Starting quote collection task");
+                let mut notification_rx = ws_client.get_notification_channel();
+                let batch_size = 50;
+
+                loop {
+                    match ws_client.next_option_quotes_batch(batch_size).await {
+                        Ok(batch) => {
+                            if !batch.is_empty() {
+                                let batch_len = batch.len();
+                                let mut quotes = quotes_clone.write().await;
+                                for quote in batch {
+                                    quotes.insert(quote.contract.option_symbol.clone(), quote);
+                                }
+                                debug!("Processed batch of {} quotes", batch_len);
+                            }
                         }
-                        debug!("Processed batch of {} quotes", batch_len);
+                        Err(e) => {
+                            warn!("Error getting quote batch: {}", e);
+                        }
+                    }
+
+                    match notification_rx.recv().await {
+                        Ok(_) => {
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!("Notification channel error: {}, reconnecting", e);
+                            notification_rx = ws_client.get_notification_channel();
+                            sleep(Duration::from_millis(100)).await;
+                        }
                     }
                 }
-                Err(e) => {
-                    warn!("Error getting quote batch: {}", e);
+            });
+        },
+        DataSource::MostRecentOptionsChain => {
+            // Fetch the most recent options chain using the snapshots API
+            info!("Fetching most recent options chain snapshots for {}", symbol);
+
+            // Get option chain snapshots
+            let snapshots = rest_client
+                .get_option_chain_snapshots(
+                    symbol,
+                    Some("indicative"), // Use indicative feed as mentioned in the docs
+                    Some(100),          // Limit to 100 snapshots
+                    None,               // updated_since
+                    None,               // page_token
+                    None,               // option_type
+                    None,               // strike_price_gte
+                    None,               // strike_price_lte
+                    None,               // expiration_date
+                    None,               // expiration_date_gte
+                    None,               // expiration_date_lte
+                    None,               // root_symbol
+                )
+                .await?;
+
+            info!("Fetched {} option snapshots", snapshots.snapshots.len());
+
+            // Convert snapshots to option quotes
+            let mut quotes = latest_quotes.write().await;
+            for (symbol, snapshot) in snapshots.snapshots.iter() {
+                if let Some(contract) = OptionContract::from_occ_symbol(symbol) {
+                    if let (Some(last_quote), Some(last_trade)) = (&snapshot.last_quote, &snapshot.last_trade) {
+                        // Use the trade price as the last price
+                        let last_price = last_trade.price;
+
+                        // Estimate underlying price (not ideal but workable)
+                        // In a real implementation, you might want to fetch the underlying price separately
+                        let underlying_price = if contract.is_call() {
+                            contract.strike + last_quote.ask - last_quote.bid
+                        } else {
+                            contract.strike - last_quote.ask + last_quote.bid
+                        };
+
+                        let quote = OptionQuote {
+                            contract,
+                            bid: last_quote.bid,
+                            ask: last_quote.ask,
+                            last: last_price,
+                            volume: last_trade.size,
+                            open_interest: 0, // Not available in snapshots
+                            underlying_price,
+                            timestamp: last_quote.t,
+                        };
+
+                        quotes.insert(symbol.clone(), quote);
+                    }
                 }
             }
 
-            match notification_rx.recv().await {
-                Ok(_) => {
-                    continue;
-                }
-                Err(e) => {
-                    warn!("Notification channel error: {}, reconnecting", e);
-                    notification_rx = ws_client.get_notification_channel();
-                    sleep(Duration::from_millis(100)).await;
-                }
-            }
+            info!("Processed {} option quotes from snapshots", quotes.len());
         }
-    });
+    }
 
     let quotes_clone = latest_quotes.clone();
     let surface_clone = surface.clone();
@@ -254,7 +353,7 @@ async fn run_volatility_surface_plot(
             let quotes_vec: Vec<_>;
 
             if quotes.is_empty() {
-                info!("No live quotes available, fetching recent quotes from REST API...");
+                info!("No quotes available, fetching recent quotes from REST API...");
                 drop(quotes);
 
                 // Convert Vec<String> to Vec<&str> for the API call
@@ -489,23 +588,24 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     config.init_logging()?;
 
-    let (ticker_sender, mut ticker_receiver) = mpsc::channel::<String>(10);
+    let (ticker_sender, mut ticker_receiver) = mpsc::channel::<(String, DataSource)>(10);
     let (plot_sender, plot_receiver) = mpsc::channel::<PlotData>(10);
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
         let symbol = args[1].clone();
         info!("Ticker provided as command-line argument: {}", symbol);
-        run_volatility_surface_plot(&symbol, plot_sender.clone()).await?;
+        // Default to most recent options chain for command-line usage
+        run_volatility_surface_plot(&symbol, plot_sender.clone(), DataSource::MostRecentOptionsChain).await?;
         return Ok(());
     }
 
     info!("Starting GUI for ticker input");
     let plotting_task = tokio::spawn(async move {
-        while let Some(ticker) = ticker_receiver.recv().await {
-            info!("Received ticker from GUI: {}", ticker);
-            if let Err(e) = run_volatility_surface_plot(&ticker, plot_sender.clone()).await {
-                warn!("Error plotting volatility surface for {}: {}", ticker, e);
+        while let Some((ticker, data_source)) = ticker_receiver.recv().await {
+            info!("Received ticker from GUI: {} with data source: {:?}", ticker, data_source);
+            if let Err(e) = run_volatility_surface_plot(&ticker, plot_sender.clone(), data_source).await {
+                warn!("Error plotting volatility surface for {} with data source {:?}: {}", ticker, data_source, e);
             }
         }
     });
@@ -519,6 +619,7 @@ async fn main() -> Result<()> {
             surface: None,
             smile: None,
         },
+        data_source: DataSource::MostRecentOptionsChain, // Default to most recent options chain
     };
 
     let native_options = eframe::NativeOptions {
