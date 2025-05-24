@@ -1,10 +1,3 @@
-//! Example application for options-rs
-//!
-//! This example demonstrates how to use the options-rs library to:
-//! 1. Connect to Alpaca Markets API
-//! 2. Stream real-time options data
-//! 3. Calculate implied volatility
-//! 4. Generate and visualize a volatility surface
 
 use options_rs::api::{RestClient, WebSocketClient};
 use options_rs::config::Config;
@@ -22,7 +15,6 @@ use tokio::time::error::Elapsed;
 fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
     let mut options = Vec::new();
 
-    // Extract options data from the JSON response
     if let Some(results) = data.get("results") {
         if let Some(results_array) = results.as_array() {
             for option_data in results_array {
@@ -32,15 +24,12 @@ fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
                     option_data.get("strike_price").and_then(|p| p.as_f64()),
                     option_data.get("expiration_date").and_then(|d| d.as_str()),
                 ) {
-                    // Parse expiration date
                     if let Ok(exp_date) = chrono::DateTime::parse_from_rfc3339(expiration) {
                         let exp_utc = exp_date.with_timezone(&chrono::Utc);
-
-                        // Create option contract
                         let option_type = match option_type {
                             "call" => options_rs::models::OptionType::Call,
                             "put" => options_rs::models::OptionType::Put,
-                            _ => continue, // Skip unknown option types
+                            _ => continue,
                         };
 
                         let contract = OptionContract::new(
@@ -63,27 +52,22 @@ fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Step 1: Load configuration from environment variables
     let config = Config::from_env()?;
     config.init_logging()?;
 
     info!("Starting options-rs example application");
 
-    // Step 2: Create API clients
     let rest_client = RestClient::new(config.alpaca.clone());
     let ws_client = WebSocketClient::new(config.alpaca.clone());
 
-    // Step 3: Get account information
     let account = rest_client.get_account().await?;
     info!("Account: {} (${:.2})", account.id, account.equity);
 
-    // Step 4: Choose a symbol and get available options
-    let symbol = "AAPL"; // Example: Apple Inc.
+    let symbol = "AAPL";
     info!("Getting options for {}", symbol);
 
     let options_data = rest_client.get_options_chain(symbol, None).await?;
 
-    // Parse options data into OptionContract objects
     let options = parse_options_chain(&options_data)?;
     info!("Found {} options for {}", options.len(), symbol);
 
@@ -92,40 +76,33 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Step 5: Extract option symbols for WebSocket subscription
     let option_symbols: Vec<String> = options.iter()
         .map(|opt| opt.symbol.clone())
-        .take(50) // Limit to 50 options for this example
+        .take(50)
         .collect();
 
     info!("Connecting to WebSocket for {} option symbols", option_symbols.len());
 
-    // Step 6: Connect to WebSocket and subscribe to option data
     ws_client.connect(option_symbols).await?;
 
-    // Step 7: Process option quotes and calculate implied volatility
     info!("Processing option quotes and calculating implied volatility");
 
     let mut ivs = Vec::new();
-    let risk_free_rate = 0.03; // 3% risk-free rate
-    let max_quotes = 100; // Process up to 100 quotes
+    let risk_free_rate = 0.03;
+    let max_quotes = 100;
     let mut quotes_processed = 0;
 
-    // Create a map to store the latest quote for each option
     let mut latest_quotes = HashMap::new();
 
-    // Process quotes until we have enough data or timeout
     let timeout = tokio::time::Duration::from_secs(30);
     let start_time = std::time::Instant::now();
 
     while quotes_processed < max_quotes && start_time.elapsed() < timeout {
-        // Get the next quote with a timeout
         match tokio::time::timeout(
             tokio::time::Duration::from_secs(1),
             ws_client.next_option_quote(),
         ).await {
             Ok(Ok(Some(quote))) => {
-                // Store the latest quote for each option
                 latest_quotes.insert(quote.contract.option_symbol.clone(), quote.clone());
                 quotes_processed += 1;
 
@@ -133,22 +110,16 @@ async fn main() -> Result<()> {
                     info!("Processed {} quotes", quotes_processed);
                 }
             },
-            Ok(Ok(None)) => {
-                // No quote received, continue
-            },
+            Ok(Ok(None)) => {},
             Ok(Err(e)) => {
-                // Error from next_option_quote
                 return Err(e);
             },
-            Err(_) => {
-                // Timeout, continue
-            }
+            Err(_) => {}
         }
     }
 
     info!("Received {} unique option quotes", latest_quotes.len());
 
-    // Calculate implied volatility for each quote
     for (_, quote) in latest_quotes {
         match ImpliedVolatility::from_quote(&quote, risk_free_rate) {
             Ok(iv) => {
@@ -174,12 +145,10 @@ async fn main() -> Result<()> {
 
     info!("Successfully calculated {} implied volatilities", ivs.len());
 
-    // Step 8: Create volatility surface
     info!("Creating volatility surface");
 
     let surface = VolatilitySurface::new(symbol.to_string(), &ivs)?;
 
-    // Step 9: Plot volatility surface and smiles
     info!("Plotting volatility surface");
 
     let output_dir = Path::new("output");
@@ -187,12 +156,10 @@ async fn main() -> Result<()> {
         std::fs::create_dir(output_dir)?;
     }
 
-    // Plot the full volatility surface
     let surface_path = output_dir.join("volatility_surface.png");
     plot_volatility_surface(&surface, &surface_path)?;
     info!("Volatility surface saved to {:?}", surface_path);
 
-    // Plot volatility smile for the first expiration
     if !surface.expirations.is_empty() {
         let expiration = surface.expirations[0];
         let (strikes, vols) = surface.slice_by_expiration(expiration)?;

@@ -212,9 +212,9 @@ Returns latest trade, quote, and Greeks for *all* option contracts of the given 
 }
 ```
 
-### Historical Bars  
-**GET** `/v1beta1/options/bars`  
-**Params:** `symbols`, `start`, `end`, `limit`, `page_token`  
+### Historical Bars
+**GET** `/v1beta1/options/bars`
+**Params:** `symbols`, `timeframe`, `start`, `end`, `limit`, `page_token`, `sort`
 Response structure identical to stock bars but for option symbols.
 
 **Response:**
@@ -277,8 +277,9 @@ Returns latest bid/ask for each contract: `{ "t", "bid", "ask", "size_bid", "siz
 }
 ```
 
-### Historical Trades  
-**GET** `/v1beta1/options/trades`  
+### Historical Trades
+**GET** `/v1beta1/options/trades`
+**Params:** `symbols`, `start`, `end`, `limit`, `page_token`, `sort`
 Up to 7 days of option trade ticks with fields `{ "t", "price", "size", "conditions", "exchange_code" }`.
 
 **Response:**
@@ -306,8 +307,9 @@ Up to 7 days of option trade ticks with fields `{ "t", "price", "size", "conditi
 }
 ```
 
-### Latest Trades  
-**GET** `/v1beta1/options/trades/latest`  
+### Latest Trades
+**GET** `/v1beta1/options/trades/latest`
+**Params:** `symbols`
 Returns most recent trade tick per contract symbol.
 
 **Response:**
@@ -332,8 +334,8 @@ Returns most recent trade tick per contract symbol.
 }
 ```
 
-### Snapshots  
-- **Multi-symbol:** **GET** `/v1beta1/options/snapshots?symbols=…` returns latest trade, quote, and greeks per contract.  
+### Snapshots
+- **Multi-symbol:** **GET** `/v1beta1/options/snapshots?symbols=…` returns latest trade, quote, and greeks per contract. Optional params: `feed`, `updated_since`, `limit`, `page_token`.
 - **Underlying-chain:** covered by the Option Chain endpoint above.
 
 **Response:**
@@ -400,8 +402,11 @@ Returns most recent trade tick per contract symbol.
 }
 ```
 
-### Condition & Exchange Codes  
-Analogous to stocks, the BETA metadata endpoints `/v1beta1/options/conditions` and `/v1beta1/options/exchanges` return code → description maps.
+### Condition & Exchange Codes
+Analogous to stocks, the BETA metadata endpoints:
+- **GET** `/v1beta1/options/meta/conditions/{ticktype}` (e.g. `/trade`)
+- **GET** `/v1beta1/options/meta/exchanges`
+return code → description maps.
 
 **Response for Conditions:**
 ```json
