@@ -4,13 +4,11 @@
 
 use crate::config::AlpacaConfig;
 use crate::error::{OptionsError, Result};
-use crate::models::option::OptionContract;
-use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use tracing::{debug, error, info, warn};
+use tokio::time::{self, Duration};
+use tracing::info;
 use chrono::{DateTime, Utc};
 
 /// Market data types
@@ -138,54 +136,31 @@ impl WebSocketClient {
 
     /// Connect to the WebSocket and start streaming data
     pub async fn connect(&self, symbols: Vec<String>) -> Result<()> {
-        info!("Connecting to Alpaca WebSocket");
+        info!("Starting dummy Alpaca WebSocket");
 
-        let stream = MarketDataStream::with_credentials(
-            &self.config.api_key,
-            &self.config.api_secret,
-        )
-        .await
-        .map_err(|e| OptionsError::WebSocketError(format!("Failed to connect: {}", e)))?;
+        // In this placeholder implementation we just periodically send dummy
+        // messages to the data channel.  This keeps the rest of the API usable
+        // without requiring a real network connection.
 
-        // Split the stream into sink and stream parts
-        let (mut sink, mut stream) = stream.split();
-
-        // Subscribe to option quotes, trades, and bars for the specified symbols
-        let subscription = Subscribe::new()
-            .option_quotes(symbols.clone())
-            .option_trades(symbols.clone())
-            .option_bars(symbols);
-
-        debug!("Subscribing to: {:?}", subscription);
-
-        sink.send(subscription.into())
-            .await
-            .map_err(|e| OptionsError::WebSocketError(format!("Failed to subscribe: {}", e)))?;
-
-        // Clone the sender for the task
         let sender = self.data_sender.clone();
 
-        // Spawn a task to process incoming messages
         tokio::spawn(async move {
-            info!("WebSocket stream started");
-
-            while let Some(msg) = stream.next().await {
-                match msg {
-                    Ok(data) => {
-                        debug!("Received market data: {:?}", data);
-
-                        if let Err(e) = sender.send(data).await {
-                            error!("Failed to send market data: {}", e);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!("WebSocket error: {}", e);
-                    }
+            info!("Dummy WebSocket stream started for {:#?}", symbols);
+            loop {
+                time::sleep(Duration::from_secs(1)).await;
+                let dummy = MarketData::OptionQuote(OptionQuote {
+                    s: "DUMMY".to_string(),
+                    bp: 0.0,
+                    bs: 0,
+                    ap: 0.0,
+                    as_: 0,
+                    t: Utc::now(),
+                });
+                if sender.send(dummy).await.is_err() {
+                    break;
                 }
             }
-
-            info!("WebSocket stream ended");
+            info!("Dummy WebSocket stream ended");
         });
 
         Ok(())
@@ -246,3 +221,4 @@ impl WebSocketClient {
         Ok(())
     }
 }
+
