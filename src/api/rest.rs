@@ -18,14 +18,12 @@ pub struct Asset {
     pub name: String,
 }
 
-/// REST client for Alpaca Markets API
 pub struct RestClient {
     client: reqwest::Client,
     config: AlpacaConfig,
 }
 
 impl RestClient {
-    /// Create a new REST client
     pub fn new(config: AlpacaConfig) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -33,14 +31,12 @@ impl RestClient {
         }
     }
 
-    /// Helper to attach authentication headers
     fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req
             .header("APCA-API-KEY-ID", &self.config.api_key)
             .header("APCA-API-SECRET-KEY", &self.config.api_secret)
     }
 
-    /// Get account information
     pub async fn get_account(&self) -> Result<Account> {
         debug!("Getting account information");
         let url = format!("{}/v2/account", self.config.base_url);
@@ -56,7 +52,6 @@ impl RestClient {
         Ok(acc)
     }
 
-    /// Get assets
     pub async fn get_assets(&self, asset_class: Option<&str>) -> Result<Vec<Asset>> {
         debug!("Getting assets");
         let mut url = format!("{}/v2/assets", self.config.base_url);
@@ -75,7 +70,7 @@ impl RestClient {
         Ok(assets)
     }
 
-    /// Get option contracts for an underlying symbol
+    /// get option contracts for an underlying symbol
     pub async fn get_options_chain(&self, symbol: &str, expiration_date: Option<&str>) -> Result<serde_json::Value> {
         info!("Getting option contracts for {}", symbol);
         let mut url = format!("{}/v2/options/contracts?underlying_symbols={}", self.config.data_url, symbol);
@@ -98,7 +93,7 @@ impl RestClient {
         Ok(data)
     }
 
-    /// Get historical options data
+    /// get historical options data
     pub async fn get_options_bars(
         &self,
         symbol: &str,
@@ -127,8 +122,8 @@ impl RestClient {
             url.push_str(&format!("&page_token={}", token));
         }
 
-        if let Some(sort_dir) = sort {
-            url.push_str(&format!("&sort={}", sort_dir));
+        if let Some(sort_order) = sort {
+            url.push_str(&format!("&sort={}", sort_order));
         }
 
         let resp = self
@@ -145,7 +140,7 @@ impl RestClient {
         Ok(data)
     }
 
-    /// Get options trades
+    /// get options trades
     pub async fn get_options_trades(
         &self,
         symbols: &[&str],
@@ -178,8 +173,8 @@ impl RestClient {
             url.push_str(&format!("&page_token={}", token));
         }
 
-        if let Some(sort_dir) = sort {
-            url.push_str(&format!("&sort={}", sort_dir));
+        if let Some(sort_order) = sort {
+            url.push_str(&format!("&sort={}", sort_order));
         }
 
         let resp = self
@@ -196,7 +191,7 @@ impl RestClient {
         Ok(data)
     }
 
-    /// Get latest options quotes
+    /// get latest options quotes
     pub async fn get_options_quotes(
         &self,
         symbols: &[&str],
@@ -222,7 +217,7 @@ impl RestClient {
         Ok(data)
     }
 
-    /// Get snapshots for a list of option symbols
+    /// get snapshots for a list of option symbols
     pub async fn get_option_snapshots(
         &self,
         symbols: &[&str],
@@ -267,7 +262,7 @@ impl RestClient {
         Ok(data)
     }
 
-    /// Get option chain snapshots for an underlying symbol
+    /// get option chain snapshots for an underlying symbol
     #[allow(clippy::too_many_arguments)]
     pub async fn get_option_chain_snapshots(
         &self,

@@ -10,7 +10,6 @@ async fn main() -> Result<()> {
 
     let client = WebSocketClient::new(config.alpaca);
 
-    // Connect to WebSocket with example option symbols
     let symbols = vec![
         "AAPL230616C00180000".to_string(),
         "AAPL230616P00180000".to_string(),

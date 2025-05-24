@@ -1,10 +1,3 @@
-//! Example application for options-rs
-//!
-//! This example demonstrates how to use the options-rs library to:
-//! 1. Connect to Alpaca Markets API
-//! 2. Stream real-time options data
-//! 3. Calculate implied volatility
-//! 4. Generate and visualize a volatility surface
 
 use options_rs::api::{RestClient, WebSocketClient};
 use options_rs::config::Config;
@@ -70,7 +63,8 @@ async fn main() -> Result<()> {
     let account = rest_client.get_account().await?;
     info!("Account: {} (${:.2})", account.id, account.equity);
 
-    let symbol = "AAPL"; // Example: Apple Inc.
+    let symbol = "AAPL";
+  
     info!("Getting options for {}", symbol);
 
     let options_data = rest_client.get_options_chain(symbol, None).await?;
@@ -85,7 +79,7 @@ async fn main() -> Result<()> {
 
     let option_symbols: Vec<String> = options.iter()
         .map(|opt| opt.symbol.clone())
-        .take(50) // Limit to 50 options for this example
+        .take(50)
         .collect();
 
     info!("Connecting to WebSocket for {} option symbols", option_symbols.len());
@@ -95,8 +89,8 @@ async fn main() -> Result<()> {
     info!("Processing option quotes and calculating implied volatility");
 
     let mut ivs = Vec::new();
-    let risk_free_rate = 0.03; // 3% risk-free rate
-    let max_quotes = 100; // Process up to 100 quotes
+    let risk_free_rate = 0.03;
+    let max_quotes = 100;
     let mut quotes_processed = 0;
 
     let mut latest_quotes = HashMap::new();
