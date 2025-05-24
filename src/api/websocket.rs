@@ -180,10 +180,7 @@ pub struct WebSocketClient {
 }
 
 impl WebSocketClient {
-    /// Create a new WebSocket client
     pub fn new(config: AlpacaConfig) -> Self {
-        // Increase channel buffer size for better handling of high-frequency updates
-        // This helps prevent backpressure when receiving many messages quickly
         let (data_sender, data_receiver) = mpsc::channel(1000);
 
         Self {
@@ -208,10 +205,8 @@ impl WebSocketClient {
             ));
         }
 
-        let ws_url = format!("{}/v2/options", self.config.data_url);
-        debug!("WebSocket URL: {}", ws_url);
-
-        let url = Url::parse(&ws_url).map_err(|e| {
+        let ws_url = "wss://stream.data.alpaca.markets/v1beta1/options";
+        let url = Url::parse(ws_url).map_err(|e| {
             OptionsError::WebSocketError(format!("Failed to parse WebSocket URL: {}", e))
         })?;
 
@@ -223,7 +218,6 @@ impl WebSocketClient {
         tokio::spawn(async move {
             info!("Starting options data stream for {} symbols", symbols_clone.len());
 
-            // Connect to WebSocket
             let (ws_stream, _) = match connect_async(url).await {
                 Ok(conn) => conn,
                 Err(e) => {
@@ -236,7 +230,6 @@ impl WebSocketClient {
 
             let (mut write, mut read) = ws_stream.split();
 
-            // Authenticate
             let auth_msg = Auth::new(api_key, api_secret);
             let auth_json = match serde_json::to_string(&auth_msg) {
                 Ok(json) => json,
@@ -251,7 +244,6 @@ impl WebSocketClient {
                 return;
             }
 
-            // Subscribe to option quotes
             let subscribe_msg = Subscribe::new().option_quotes(symbols_clone);
             let subscribe_json = match serde_json::to_string(&subscribe_msg) {
                 Ok(json) => json,
@@ -266,42 +258,32 @@ impl WebSocketClient {
                 return;
             }
 
-            // Process incoming messages
             while let Some(msg) = read.next().await {
                 match msg {
                     Ok(Message::Text(text)) => {
-                        // Only log message content at trace level to reduce overhead
                         debug!("Received text message");
 
-                        // Try to parse directly as OptionQuote first for efficiency
-                        // This avoids the overhead of parsing to Value and then to OptionQuote
                         if text.contains(r#""T":"q""#) {
-                            // Fast path for option quotes
                             if let Ok(quote) = serde_json::from_str::<OptionQuote>(&text) {
-                                // Create option contract from the quote data
                                 if let Some(contract) = OptionContract::from_occ_symbol(&quote.option_symbol) {
-                                    // Create a model quote with the contract
                                     let model_quote = ModelOptionQuote::new(
                                         contract,
                                         quote.bp,
                                         quote.ap,
-                                        (quote.bp + quote.ap) / 2.0, // mid price
-                                        0, // Volume not provided in quote
-                                        0, // Open interest not provided
+                                        (quote.bp + quote.ap) / 2.0,
+                                        0,
+                                        0,
                                         quote.up,
                                     );
 
-                                    // Use try_send instead of send to avoid awaiting when possible
-                                    // This reduces latency by not yielding to the executor
                                     match sender.try_send(model_quote) {
-                                        Ok(_) => {},
+                                        Ok(_) => {}
                                         Err(mpsc::error::TrySendError::Full(model_quote)) => {
-                                            // Channel is full, fall back to awaiting
                                             if sender.send(model_quote).await.is_err() {
                                                 warn!("Failed to send quote to channel");
                                                 break;
                                             }
-                                        },
+                                        }
                                         Err(_) => {
                                             warn!("Failed to send quote to channel");
                                             break;
@@ -312,39 +294,20 @@ impl WebSocketClient {
                             }
                         }
 
-                        // Fallback path for other message types
                         match serde_json::from_str::<serde_json::Value>(&text) {
                             Ok(json) => {
-                                // Check if it's a market data message
                                 if let Some(msg_type) = json.get("T") {
                                     match msg_type.as_str() {
-                                        Some("q") => {
-                                            // Option quote - should be handled by fast path above
-                                            debug!("Quote message fell back to slow path");
-                                        },
-                                        Some("t") => {
-                                            // Option trade - could be processed similarly
-                                            debug!("Received option trade");
-                                        },
-                                        Some("b") => {
-                                            // Option bar - could be processed similarly
-                                            debug!("Received option bar");
-                                        },
-                                        Some("subscription") => {
-                                            info!("Subscription confirmed");
-                                        },
-                                        Some("error") => {
-                                            warn!("Received error: {}", json);
-                                        },
-                                        Some(t) => {
-                                            debug!("Received unknown message type: {}", t);
-                                        },
-                                        None => {
-                                            debug!("Received message without type");
-                                        }
+                                        Some("q") => debug!("Quote message fell back to slow path"),
+                                        Some("t") => debug!("Received option trade"),
+                                        Some("b") => debug!("Received option bar"),
+                                        Some("subscription") => info!("Subscription confirmed"),
+                                        Some("error") => warn!("Received error: {}", json),
+                                        Some(t) => debug!("Received unknown message type: {}", t),
+                                        None => debug!("Received message without type"),
                                     }
                                 }
-                            },
+                            }
                             Err(e) => {
                                 warn!("Failed to parse message: {}", e);
                             }
@@ -354,7 +317,6 @@ impl WebSocketClient {
                         debug!("Received binary message");
                     },
                     Ok(Message::Ping(data)) => {
-                        // Respond to ping with pong
                         if let Err(e) = write.send(Message::Pong(data)).await {
                             warn!("Failed to send pong: {}", e);
                             break;
@@ -408,24 +370,23 @@ impl WebSocketClient {
     }
 }
 
-// Implement conversion from API types to model types
 impl From<OptionQuote> for ModelOptionQuote {
     fn from(quote: OptionQuote) -> Self {
         let mid_price = (quote.bp + quote.ap) / 2.0;
 
-        // Create contract from option symbol
+        // Create contract from option symbol if possible
         if let Some(contract) = OptionContract::from_occ_symbol(&quote.option_symbol) {
             Self::new(
                 contract,
                 quote.bp,
                 quote.ap,
                 mid_price,
-                0, // Volume not provided in quote
-                0, // Open interest not provided
+                0,
+                0,
                 quote.up,
             )
         } else {
-            // Fallback to creating a contract from the available fields
+            // Fallback to creating a contract from available fields
             let contract = OptionContract::new(
                 quote.s.clone(),
                 quote.option_type,
@@ -438,8 +399,8 @@ impl From<OptionQuote> for ModelOptionQuote {
                 quote.bp,
                 quote.ap,
                 mid_price,
-                0, // Volume not provided in quote
-                0, // Open interest not provided
+                0,
+                0,
                 quote.up,
             )
         }
