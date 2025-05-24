@@ -8,12 +8,58 @@
 
 use options_rs::api::{RestClient, WebSocketClient};
 use options_rs::config::Config;
-use options_rs::error::Result;
+use options_rs::error::{OptionsError, Result};
+use options_rs::models::{OptionContract, OptionQuote};
 use options_rs::models::volatility::{ImpliedVolatility, VolatilitySurface};
 use options_rs::utils::{plot_volatility_smile, plot_volatility_surface};
 use std::collections::HashMap;
 use std::path::Path;
 use tracing::{info, warn};
+use serde_json::Value;
+use tokio::time::error::Elapsed;
+
+/// Parse options chain data from Alpaca API response
+fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
+    let mut options = Vec::new();
+
+    // Extract options data from the JSON response
+    if let Some(results) = data.get("results") {
+        if let Some(results_array) = results.as_array() {
+            for option_data in results_array {
+                if let (Some(symbol), Some(option_type), Some(strike), Some(expiration)) = (
+                    option_data.get("symbol").and_then(|s| s.as_str()),
+                    option_data.get("option_type").and_then(|t| t.as_str()),
+                    option_data.get("strike_price").and_then(|p| p.as_f64()),
+                    option_data.get("expiration_date").and_then(|d| d.as_str()),
+                ) {
+                    // Parse expiration date
+                    if let Ok(exp_date) = chrono::DateTime::parse_from_rfc3339(expiration) {
+                        let exp_utc = exp_date.with_timezone(&chrono::Utc);
+
+                        // Create option contract
+                        let option_type = match option_type {
+                            "call" => options_rs::models::OptionType::Call,
+                            "put" => options_rs::models::OptionType::Put,
+                            _ => continue, // Skip unknown option types
+                        };
+
+                        let contract = OptionContract::new(
+                            symbol.to_string(),
+                            option_type,
+                            strike,
+                            exp_utc,
+                        );
+
+                        options.push(contract);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(options)
+}
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,7 +81,10 @@ async fn main() -> Result<()> {
     let symbol = "AAPL"; // Example: Apple Inc.
     info!("Getting options for {}", symbol);
 
-    let options = rest_client.get_options(symbol).await?;
+    let options_data = rest_client.get_options_chain(symbol, None).await?;
+
+    // Parse options data into OptionContract objects
+    let options = parse_options_chain(&options_data)?;
     info!("Found {} options for {}", options.len(), symbol);
 
     if options.is_empty() {
@@ -71,16 +120,28 @@ async fn main() -> Result<()> {
 
     while quotes_processed < max_quotes && start_time.elapsed() < timeout {
         // Get the next quote with a timeout
-        if let Ok(Some(quote)) = tokio::time::timeout(
+        match tokio::time::timeout(
             tokio::time::Duration::from_secs(1),
             ws_client.next_option_quote(),
-        ).await? {
-            // Store the latest quote for each option
-            latest_quotes.insert(quote.option_symbol.clone(), quote.clone());
-            quotes_processed += 1;
+        ).await {
+            Ok(Ok(Some(quote))) => {
+                // Store the latest quote for each option
+                latest_quotes.insert(quote.contract.option_symbol.clone(), quote.clone());
+                quotes_processed += 1;
 
-            if quotes_processed % 10 == 0 {
-                info!("Processed {} quotes", quotes_processed);
+                if quotes_processed % 10 == 0 {
+                    info!("Processed {} quotes", quotes_processed);
+                }
+            },
+            Ok(Ok(None)) => {
+                // No quote received, continue
+            },
+            Ok(Err(e)) => {
+                // Error from next_option_quote
+                return Err(e);
+            },
+            Err(_) => {
+                // Timeout, continue
             }
         }
     }
@@ -93,9 +154,9 @@ async fn main() -> Result<()> {
             Ok(iv) => {
                 info!(
                     "Option: {}, Strike: {}, Expiry: {}, IV: {:.2}%",
-                    quote.option_symbol,
-                    quote.strike,
-                    quote.expiration.format("%Y-%m-%d"),
+                    quote.contract.option_symbol,
+                    quote.contract.strike,
+                    quote.contract.expiration.format("%Y-%m-%d"),
                     iv.value * 100.0
                 );
                 ivs.push(iv);
@@ -145,4 +206,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-

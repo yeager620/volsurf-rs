@@ -1,15 +1,9 @@
-//! Plotting utilities for options data
-//!
-//! This module provides functions for visualizing options data,
-//! including volatility surfaces and option chains.
-
 use crate::error::{OptionsError, Result};
 use crate::models::volatility::VolatilitySurface;
 use ndarray::Array1;
 use plotters::prelude::*;
 use std::path::Path;
 
-/// Plot a volatility smile (volatility vs. strike for a single expiration)
 pub fn plot_volatility_smile<P: AsRef<Path>>(
     strikes: &Array1<f64>,
     volatilities: &Array1<f64>,
@@ -19,7 +13,6 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
 ) -> Result<()> {
     let output_path = output_path.as_ref();
     
-    // Filter out NaN values
     let mut valid_points: Vec<(f64, f64)> = Vec::new();
     for (i, &vol) in volatilities.iter().enumerate() {
         if !vol.is_nan() {
@@ -33,13 +26,13 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
         ));
     }
     
-    // Find min/max values for axes
+    // find min/max values for axes
     let min_strike = valid_points.iter().map(|(s, _)| *s).fold(f64::INFINITY, f64::min);
     let max_strike = valid_points.iter().map(|(s, _)| *s).fold(f64::NEG_INFINITY, f64::max);
     let min_vol = valid_points.iter().map(|(_, v)| *v).fold(f64::INFINITY, f64::min);
     let max_vol = valid_points.iter().map(|(_, v)| *v).fold(f64::NEG_INFINITY, f64::max);
     
-    // Add some padding
+    // padding
     let strike_range = max_strike - min_strike;
     let vol_range = max_vol - min_vol;
     let strike_min = min_strike - 0.05 * strike_range;
@@ -47,10 +40,8 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
     let vol_min = (min_vol - 0.1 * vol_range).max(0.0);  // IV can't be negative
     let vol_max = max_vol + 0.1 * vol_range;
     
-    // Format expiration date
     let exp_str = expiration.format("%Y-%m-%d").to_string();
     
-    // Create the plot
     let root = BitMapBackend::new(output_path, (800, 600)).into_drawing_area();
     root.fill(&WHITE).map_err(|e| OptionsError::Other(e.to_string()))?;
     
@@ -73,7 +64,6 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
         .draw()
         .map_err(|e| OptionsError::Other(e.to_string()))?;
     
-    // Draw the volatility smile
     chart
         .draw_series(LineSeries::new(
             valid_points.iter().map(|&(s, v)| (s, v)),
@@ -81,7 +71,6 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
         ))
         .map_err(|e| OptionsError::Other(e.to_string()))?;
     
-    // Draw points
     chart
         .draw_series(
             valid_points
@@ -90,7 +79,6 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
         )
         .map_err(|e| OptionsError::Other(e.to_string()))?;
     
-    // Add a note about the date
     root
         .draw_text(
         &format!("Generated: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
@@ -105,7 +93,6 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
 }
 
 
-/// Plot a volatility term structure (volatility vs. time to expiration for a single strike)
 pub fn plot_volatility_term_structure<P: AsRef<Path>>(
     times: &Array1<f64>,
     volatilities: &Array1<f64>,
@@ -294,7 +281,6 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
         }
     }
     
-    // Add a color bar
     let color_bar_width = 20;
     let color_bar_height = 400;
     let color_bar_x = 750;
@@ -316,7 +302,6 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
         .map_err(|e| OptionsError::Other(e.to_string()))?;
     }
     
-    // Add labels for the color bar
     root
         .draw_text(
         &format!("{:.2}", vol_max),
@@ -341,7 +326,6 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
     )
         .map_err(|e| OptionsError::Other(e.to_string()))?;
     
-    // Add a note about the date
     root
         .draw_text(
         &format!("Generated: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),

@@ -1,9 +1,3 @@
-//! Simplified REST client for Alpaca Markets API
-//!
-//! This implementation uses `reqwest` directly and returns basic data
-//! structures. It demonstrates how the API keys from the configuration are
-//! attached to every request.
-
 use crate::config::AlpacaConfig;
 use crate::error::{OptionsError, Result};
 use chrono::{DateTime, Utc};

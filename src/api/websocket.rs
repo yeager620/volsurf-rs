@@ -1,7 +1,3 @@
-//! WebSocket client for Alpaca Markets API
-//!
-//! This module provides a client for streaming real-time data from Alpaca Markets.
-
 use crate::config::AlpacaConfig;
 use crate::error::{OptionsError, Result};
 use crate::models::{OptionContract, OptionQuote as ModelOptionQuote, OptionType};
