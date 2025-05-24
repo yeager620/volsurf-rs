@@ -127,16 +127,19 @@ impl VolatilitySurface {
         
         // Extract unique expirations and strikes
         let mut expirations_set = BTreeSet::new();
-        let mut strikes_set = BTreeSet::new();
+        let mut strikes_set: Vec<f64> = Vec::new();
         
         for iv in implied_volatilities {
             expirations_set.insert(iv.contract.expiration);
-            strikes_set.insert(iv.contract.strike);
+            if !strikes_set.contains(&iv.contract.strike) {
+                strikes_set.push(iv.contract.strike);
+            }
         }
 
         // Sort expirations and strikes
         let expirations: Vec<_> = expirations_set.into_iter().collect();
-        let strikes: Vec<_> = strikes_set.into_iter().collect();
+        let mut strikes = strikes_set;
+        strikes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less));
         
         // Create a 2D array for volatilities
         let n_expirations = expirations.len();

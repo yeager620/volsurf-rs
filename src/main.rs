@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
             ws_client.next_option_quote(),
         ).await? {
             // Store the latest quote for each option
-            latest_quotes.insert(quote.contract.option_symbol.clone(), quote.clone());
+            latest_quotes.insert(quote.option_symbol.clone(), quote.clone());
             quotes_processed += 1;
 
             if quotes_processed % 10 == 0 {
@@ -93,9 +93,9 @@ async fn main() -> Result<()> {
             Ok(iv) => {
                 info!(
                     "Option: {}, Strike: {}, Expiry: {}, IV: {:.2}%",
-                    quote.contract.option_symbol,
-                    quote.contract.strike,
-                    quote.contract.expiration.format("%Y-%m-%d"),
+                    quote.option_symbol,
+                    quote.strike,
+                    quote.expiration.format("%Y-%m-%d"),
                     iv.value * 100.0
                 );
                 ivs.push(iv);
