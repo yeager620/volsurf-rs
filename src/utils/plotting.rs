@@ -1,10 +1,10 @@
 use crate::error::{OptionsError, Result};
 use crate::models::volatility::VolatilitySurface;
-use image::{ImageBuffer, Rgba};
+use egui::ColorImage;
+use image::ImageFormat;
 use ndarray::Array1;
-use plotters::backend::{BitMapBackend, PixelFormat};
+use plotters::backend::BitMapBackend;
 use plotters::prelude::*;
-use std::io::Cursor;
 use std::path::Path;
 
 pub fn plot_volatility_smile<P: AsRef<Path>>(
@@ -16,8 +16,20 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
 ) -> Result<()> {
     let output_path = output_path.as_ref();
 
-    let img_data = plot_volatility_smile_in_memory(strikes, volatilities, symbol, expiration)?;
-    std::fs::write(output_path, img_data)?;
+    let img = plot_volatility_smile_in_memory(strikes, volatilities, symbol, expiration)?;
+    let pixels: Vec<u8> = img
+        .pixels
+        .iter()
+        .flat_map(|p| p.to_array())
+        .collect();
+    image::save_buffer_with_format(
+        output_path,
+        &pixels,
+        img.size[0] as u32,
+        img.size[1] as u32,
+        image::ColorType::Rgba8,
+        ImageFormat::Png,
+    )?;
 
     Ok(())
 }
@@ -27,7 +39,7 @@ pub fn plot_volatility_smile_in_memory(
     volatilities: &Array1<f64>,
     symbol: &str,
     expiration: &chrono::DateTime<chrono::Utc>,
-) -> Result<Vec<u8>> {
+) -> Result<ColorImage> {
     let mut valid_points: Vec<(f64, f64)> = Vec::new();
     for (i, &vol) in volatilities.iter().enumerate() {
         if !vol.is_nan() {
@@ -67,9 +79,11 @@ pub fn plot_volatility_smile_in_memory(
 
     let exp_str = expiration.format("%Y-%m-%d").to_string();
 
-    let mut buffer = vec![0u8; 800 * 600 * 4]; // RGBA buffer
+    let width = 1200u32;
+    let height = 900u32;
+    let mut buffer = vec![0u8; (width * height * 4) as usize];
     {
-        let root = BitMapBackend::with_buffer(&mut buffer, (800, 600)).into_drawing_area();
+        let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
         root.fill(&WHITE)
             .map_err(|e| OptionsError::Other(e.to_string()))?;
 
@@ -121,17 +135,11 @@ pub fn plot_volatility_smile_in_memory(
             .map_err(|e| OptionsError::Other(e.to_string()))?;
     }
 
-    // Convert the buffer to PNG format
-    let img_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(800, 600, buffer)
-        .ok_or_else(|| OptionsError::Other("Failed to create image buffer".to_string()))?;
-
-    let mut png_data = Vec::new();
-    let mut cursor = Cursor::new(&mut png_data);
-    img_buffer
-        .write_to(&mut cursor, image::ImageFormat::Png)
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    Ok(png_data)
+    Ok(ColorImage::from_rgba_unmultiplied([
+        width as usize,
+        height as usize,
+    ],
+    &buffer))
 }
 
 pub fn plot_volatility_term_structure<P: AsRef<Path>>(
@@ -244,13 +252,25 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
 ) -> Result<()> {
     let output_path = output_path.as_ref();
 
-    let img_data = plot_volatility_surface_in_memory(surface)?;
-    std::fs::write(output_path, img_data)?;
+    let img = plot_volatility_surface_in_memory(surface)?;
+    let pixels: Vec<u8> = img
+        .pixels
+        .iter()
+        .flat_map(|p| p.to_array())
+        .collect();
+    image::save_buffer_with_format(
+        output_path,
+        &pixels,
+        img.size[0] as u32,
+        img.size[1] as u32,
+        image::ColorType::Rgba8,
+        ImageFormat::Png,
+    )?;
 
     Ok(())
 }
 
-pub fn plot_volatility_surface_in_memory(surface: &VolatilitySurface) -> Result<Vec<u8>> {
+pub fn plot_volatility_surface_in_memory(surface: &VolatilitySurface) -> Result<ColorImage> {
     let now = chrono::Utc::now();
     let times_to_expiration: Vec<f64> = surface
         .expirations
@@ -296,10 +316,12 @@ pub fn plot_volatility_surface_in_memory(surface: &VolatilitySurface) -> Result<
     let vol_max = max_vol + 0.1 * vol_range;
 
     // Create a buffer for the image data
-    let mut buffer = vec![0u8; 800 * 600 * 4]; // RGBA buffer
+    let width = 1200u32;
+    let height = 900u32;
+    let mut buffer = vec![0u8; (width * height * 4) as usize];
     {
         // Create a backend that writes to the buffer
-        let root = BitMapBackend::with_buffer(&mut buffer, (800, 600)).into_drawing_area();
+        let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
         root.fill(&WHITE)
             .map_err(|e| OptionsError::Other(e.to_string()))?;
 
@@ -412,14 +434,9 @@ pub fn plot_volatility_surface_in_memory(surface: &VolatilitySurface) -> Result<
             .map_err(|e| OptionsError::Other(e.to_string()))?;
     }
 
-    let img_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(800, 600, buffer)
-        .ok_or_else(|| OptionsError::Other("Failed to create image buffer".to_string()))?;
-
-    let mut png_data = Vec::new();
-    let mut cursor = Cursor::new(&mut png_data);
-    img_buffer
-        .write_to(&mut cursor, image::ImageFormat::Png)
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    Ok(png_data)
+    Ok(ColorImage::from_rgba_unmultiplied([
+        width as usize,
+        height as usize,
+    ],
+    &buffer))
 }

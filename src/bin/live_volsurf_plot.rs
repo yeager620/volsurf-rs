@@ -24,8 +24,8 @@ struct PlotImages {
 }
 
 struct PlotData {
-    surface_png: Vec<u8>,
-    smile_png: Option<Vec<u8>>,
+    surface_img: egui::ColorImage,
+    smile_img: Option<egui::ColorImage>,
 }
 
 struct VolatilitySurfaceApp {
@@ -47,16 +47,12 @@ impl eframe::App for VolatilitySurfaceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(plot_data) = self.plot_receiver.try_recv() {
             self.status = "Received new plot data".to_string();
-            if !plot_data.surface_png.is_empty() {
-                let surface_texture =
-                    load_texture_from_png(ctx, &plot_data.surface_png, "surface_texture");
-                self.plots.surface = Some(surface_texture);
-            }
-            if let Some(smile_png) = plot_data.smile_png {
-                if !smile_png.is_empty() {
-                    let smile_texture = load_texture_from_png(ctx, &smile_png, "smile_texture");
-                    self.plots.smile = Some(smile_texture);
-                }
+            let surface_texture =
+                load_texture_from_png(ctx, plot_data.surface_img, "surface_texture");
+            self.plots.surface = Some(surface_texture);
+            if let Some(smile_img) = plot_data.smile_img {
+                let smile_texture = load_texture_from_png(ctx, smile_img, "smile_texture");
+                self.plots.smile = Some(smile_texture);
             }
         }
 
@@ -135,16 +131,9 @@ impl eframe::App for VolatilitySurfaceApp {
 
 fn load_texture_from_png(
     ctx: &egui::Context,
-    png_data: &[u8],
+    image_data: egui::ColorImage,
     texture_id: &str,
 ) -> egui::TextureHandle {
-    let image = image::load_from_memory(png_data)
-        .expect("Failed to load PNG data")
-        .to_rgba8();
-    let size = [image.width() as _, image.height() as _];
-    let image_data =
-        egui::ColorImage::from_rgba_unmultiplied(size, image.as_flat_samples().as_slice());
-
     ctx.load_texture(texture_id, image_data, egui::TextureOptions::default())
 }
 
@@ -237,10 +226,6 @@ async fn run_volatility_surface_plot(
     let surface = Arc::new(RwLock::new(None));
     let risk_free_rate = 0.03; // Could be made configurable
 
-    let output_dir = Path::new("output");
-    if !output_dir.exists() {
-        std::fs::create_dir(output_dir)?;
-    }
 
     // Different data fetching strategies based on the data source
     match data_source {
@@ -778,7 +763,6 @@ async fn run_volatility_surface_plot(
     let surface_clone = surface.clone();
     let plot_interval = Duration::from_millis(1000); // update every n milliseconds
     let max_update_interval = Duration::from_secs(10); // force update after this time even if no changes
-    let output_dir_clone = output_dir.to_path_buf();
     let symbol_clone = symbol.to_string();
     let plot_sender_clone = plot_sender.clone();
 
@@ -796,25 +780,15 @@ async fn run_volatility_surface_plot(
 
                 if current_version > last_surface_version || time_since_update > max_update_interval
                 {
-                    let mut plot_data = PlotData {
-                        surface_png: Vec::new(),
-                        smile_png: None,
-                    };
-
-                    match plot_volatility_surface_in_memory(surface) {
-                        Ok(surface_png) => {
-                            let surface_path = output_dir_clone.join("volatility_surface.png");
-                            if let Err(e) = std::fs::write(&surface_path, &surface_png) {
-                                warn!("Failed to save vol surface to file: {}", e);
-                            }
-
-                            plot_data.surface_png = surface_png;
-                        }
+                    let surface_img = match plot_volatility_surface_in_memory(surface) {
+                        Ok(img) => img,
                         Err(e) => {
                             warn!("Failed to generate vol surface plot: {}", e);
                             continue;
                         }
-                    }
+                    };
+
+                    let mut smile_img_opt = None;
 
                     if !surface.expirations.is_empty() {
                         let expiration = surface.expirations[0];
@@ -826,14 +800,8 @@ async fn run_volatility_surface_plot(
                                     &symbol_clone,
                                     &expiration,
                                 ) {
-                                    Ok(smile_png) => {
-                                        let smile_path =
-                                            output_dir_clone.join("volatility_smile.png");
-                                        if let Err(e) = std::fs::write(&smile_path, &smile_png) {
-                                            warn!("Failed to save vol smile to file: {}", e);
-                                        }
-
-                                        plot_data.smile_png = Some(smile_png);
+                                    Ok(img) => {
+                                        smile_img_opt = Some(img);
                                     }
                                     Err(e) => {
                                         warn!("Failed to generate vol smile plot: {}", e);
@@ -845,6 +813,11 @@ async fn run_volatility_surface_plot(
                             }
                         }
                     }
+
+                    let plot_data = PlotData {
+                        surface_img,
+                        smile_img: smile_img_opt,
+                    };
 
                     if let Err(e) = plot_sender_clone.try_send(plot_data) {
                         warn!("Failed to send plot data to GUI: {}", e);
