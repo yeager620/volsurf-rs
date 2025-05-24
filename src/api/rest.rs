@@ -18,14 +18,12 @@ pub struct Asset {
     pub name: String,
 }
 
-/// REST client for Alpaca Markets API
 pub struct RestClient {
     client: reqwest::Client,
     config: AlpacaConfig,
 }
 
 impl RestClient {
-    /// Create a new REST client
     pub fn new(config: AlpacaConfig) -> Self {
         Self {
             client: reqwest::Client::new(),
@@ -33,14 +31,12 @@ impl RestClient {
         }
     }
 
-    /// Helper to attach authentication headers
     fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req
             .header("APCA-API-KEY-ID", &self.config.api_key)
             .header("APCA-API-SECRET-KEY", &self.config.api_secret)
     }
 
-    /// Get account information
     pub async fn get_account(&self) -> Result<Account> {
         debug!("Getting account information");
         let url = format!("{}/v2/account", self.config.base_url);
@@ -56,7 +52,6 @@ impl RestClient {
         Ok(acc)
     }
 
-    /// Get assets
     pub async fn get_assets(&self, asset_class: Option<&str>) -> Result<Vec<Asset>> {
         debug!("Getting assets");
         let mut url = format!("{}/v2/assets", self.config.base_url);
@@ -75,7 +70,7 @@ impl RestClient {
         Ok(assets)
     }
 
-    /// Get option contracts for an underlying symbol
+    /// get option contracts for an underlying symbol
     pub async fn get_options_chain(&self, symbol: &str, expiration_date: Option<&str>) -> Result<serde_json::Value> {
         info!("Getting option contracts for {}", symbol);
         let mut url = format!("{}/v2/options/contracts?underlying_symbols={}", self.config.data_url, symbol);
@@ -98,7 +93,7 @@ impl RestClient {
         Ok(data)
     }
 
-    /// Get historical options data
+    /// get historical options data
     pub async fn get_options_bars(
         &self,
         symbol: &str,
@@ -145,7 +140,7 @@ impl RestClient {
         Ok(data)
     }
 
-    /// Get options trades
+    /// get options trades
     pub async fn get_options_trades(
         &self,
         symbols: &[&str],
@@ -196,7 +191,7 @@ impl RestClient {
         Ok(data)
     }
 
-    /// Get latest options quotes
+    /// get latest options quotes
     pub async fn get_options_quotes(
         &self,
         symbols: &[&str],
@@ -218,6 +213,105 @@ impl RestClient {
             .json::<serde_json::Value>()
             .await
             .map_err(|e| OptionsError::ParseError(format!("Failed to parse options quotes: {}", e)))?;
+
+        Ok(data)
+    }
+
+    /// get snapshots for a list of option symbols
+    pub async fn get_option_snapshots(
+        &self,
+        symbols: &[&str],
+        feed: Option<&str>,
+        updated_since: Option<DateTime<Utc>>,
+        limit: Option<u32>,
+        page_token: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let symbols_str = symbols.join(",");
+        let mut url = format!(
+            "{}/v1beta1/options/snapshots?symbols={}",
+            self.config.data_url, symbols_str
+        );
+
+        if let Some(feed_val) = feed {
+            url.push_str(&format!("&feed={}", feed_val));
+        }
+
+        if let Some(updated) = updated_since {
+            url.push_str(&format!("&updated_since={}", updated.to_rfc3339()));
+        }
+
+        if let Some(limit_val) = limit {
+            url.push_str(&format!("&limit={}", limit_val));
+        }
+
+        if let Some(token) = page_token {
+            url.push_str(&format!("&page_token={}", token));
+        }
+
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| OptionsError::Other(format!("Failed to get option snapshots: {}", e)))?;
+
+        let data = resp
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| OptionsError::ParseError(format!("Failed to parse option snapshots: {}", e)))?;
+
+        Ok(data)
+    }
+
+    /// get option chain snapshots for an underlying symbol
+    #[allow(clippy::too_many_arguments)]
+    pub async fn get_option_chain_snapshots(
+        &self,
+        underlying_symbol: &str,
+        feed: Option<&str>,
+        limit: Option<u32>,
+        updated_since: Option<DateTime<Utc>>,
+        page_token: Option<&str>,
+        option_type: Option<&str>,
+        strike_price_gte: Option<f64>,
+        strike_price_lte: Option<f64>,
+        expiration_date: Option<&str>,
+        expiration_date_gte: Option<&str>,
+        expiration_date_lte: Option<&str>,
+        root_symbol: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut url = format!(
+            "{}/v1beta1/options/snapshots/{}",
+            self.config.data_url, underlying_symbol
+        );
+
+        let mut query_params = Vec::new();
+        if let Some(feed_val) = feed { query_params.push(format!("feed={}", feed_val)); }
+        if let Some(limit_val) = limit { query_params.push(format!("limit={}", limit_val)); }
+        if let Some(updated) = updated_since { query_params.push(format!("updated_since={}", updated.to_rfc3339())); }
+        if let Some(token) = page_token { query_params.push(format!("page_token={}", token)); }
+        if let Some(t) = option_type { query_params.push(format!("type={}", t)); }
+        if let Some(v) = strike_price_gte { query_params.push(format!("strike_price_gte={}", v)); }
+        if let Some(v) = strike_price_lte { query_params.push(format!("strike_price_lte={}", v)); }
+        if let Some(v) = expiration_date { query_params.push(format!("expiration_date={}", v)); }
+        if let Some(v) = expiration_date_gte { query_params.push(format!("expiration_date_gte={}", v)); }
+        if let Some(v) = expiration_date_lte { query_params.push(format!("expiration_date_lte={}", v)); }
+        if let Some(v) = root_symbol { query_params.push(format!("root_symbol={}", v)); }
+
+        if !query_params.is_empty() {
+            url.push('?');
+            url.push_str(&query_params.join("&"));
+        }
+
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| OptionsError::Other(format!("Failed to get option chain snapshots: {}", e)))?;
+
+        let data = resp
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| OptionsError::ParseError(format!("Failed to parse option chain snapshots: {}", e)))?;
 
         Ok(data)
     }

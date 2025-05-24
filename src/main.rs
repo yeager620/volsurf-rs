@@ -64,6 +64,7 @@ async fn main() -> Result<()> {
     info!("Account: {} (${:.2})", account.id, account.equity);
 
     let symbol = "AAPL";
+  
     info!("Getting options for {}", symbol);
 
     let options_data = rest_client.get_options_chain(symbol, None).await?;
