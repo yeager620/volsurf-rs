@@ -92,9 +92,10 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
     )?;
     
     root.present()?;
-    
+
     Ok(())
 }
+
 
 /// Plot a volatility term structure (volatility vs. time to expiration for a single strike)
 pub fn plot_volatility_term_structure<P: AsRef<Path>>(
