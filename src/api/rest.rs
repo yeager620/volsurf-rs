@@ -1,69 +1,96 @@
-//! REST client for Alpaca Markets API
+//! Simplified REST client for Alpaca Markets API
 //!
-//! This module provides a client for interacting with the Alpaca Markets REST API.
+//! This implementation uses `reqwest` directly and returns basic data
+//! structures. It demonstrates how the API keys from the configuration are
+//! attached to every request.
 
 use crate::config::AlpacaConfig;
 use crate::error::{OptionsError, Result};
-use apca::api::v2::asset::Asset;
-use apca::api::v2::order::{Order, OrderReq};
-use apca::Client;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Account {
+    pub id: String,
+    pub equity: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Asset {
+    pub id: String,
+    pub class: String,
+    pub symbol: String,
+    pub name: String,
+}
 
 /// REST client for Alpaca Markets API
 pub struct RestClient {
-    /// Alpaca API client
-    client: Client,
-    /// Configuration for the Alpaca API
+    client: reqwest::Client,
     config: AlpacaConfig,
 }
 
 impl RestClient {
     /// Create a new REST client
     pub fn new(config: AlpacaConfig) -> Self {
-        let client = Client::new(
-            config.api_key.clone(),
-            config.api_secret.clone(),
-            config.base_url.clone(),
-            config.data_url.clone(),
-        );
+        Self {
+            client: reqwest::Client::new(),
+            config,
+        }
+    }
 
-        Self { client, config }
+    /// Helper to attach authentication headers
+    fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        req
+            .header("APCA-API-KEY-ID", &self.config.api_key)
+            .header("APCA-API-SECRET-KEY", &self.config.api_secret)
     }
 
     /// Get account information
-    pub async fn get_account(&self) -> Result<apca::api::v2::account::Account> {
+    pub async fn get_account(&self) -> Result<Account> {
         debug!("Getting account information");
-        self.client
-            .issue::<apca::api::v2::account::Account>(&apca::api::v2::account::Get::new())
+        let url = format!("{}/v2/account", self.config.base_url);
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
             .await
-            .map_err(OptionsError::AlpacaError)
+            .map_err(|e| OptionsError::Other(format!("Request failed: {}", e)))?;
+        let acc = resp
+            .json::<Account>()
+            .await
+            .map_err(|e| OptionsError::ParseError(format!("Failed to parse account: {}", e)))?;
+        Ok(acc)
     }
 
     /// Get assets
     pub async fn get_assets(&self, asset_class: Option<&str>) -> Result<Vec<Asset>> {
         debug!("Getting assets");
-        let mut req = apca::api::v2::asset::List::new();
-        
+        let mut url = format!("{}/v2/assets", self.config.base_url);
         if let Some(class) = asset_class {
-            req = req.asset_class(class);
+            url.push_str(&format!("?asset_class={}", class));
         }
-        
-        self.client
-            .issue::<Vec<Asset>>(&req)
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
             .await
-            .map_err(OptionsError::AlpacaError)
+            .map_err(|e| OptionsError::Other(format!("Request failed: {}", e)))?;
+        let assets = resp
+            .json::<Vec<Asset>>()
+            .await
+            .map_err(|e| OptionsError::ParseError(format!("Failed to parse assets: {}", e)))?;
+        Ok(assets)
     }
 
     /// Get options for a symbol
     pub async fn get_options(&self, symbol: &str) -> Result<Vec<Asset>> {
         info!("Getting options for symbol: {}", symbol);
-        self.get_assets(Some("option"))
+        self
+            .get_assets(Some("option"))
             .await
             .map(|assets| {
                 assets
                     .into_iter()
-                    .filter(|asset| asset.symbol.contains(symbol))
+                    .filter(|a| a.symbol.contains(symbol))
                     .collect()
             })
     }
@@ -76,45 +103,21 @@ impl RestClient {
         end: DateTime<Utc>,
         timeframe: &str,
     ) -> Result<serde_json::Value> {
-        debug!(
-            "Getting options bars for {} from {} to {}",
-            symbol, start, end
-        );
-        
-        // Construct the URL for the options bars endpoint
+        debug!("Getting options bars for {} from {} to {}", symbol, start, end);
         let url = format!(
             "{}/v2/stocks/{}/bars?start={}&end={}&timeframe={}",
-            self.config.data_url,
-            symbol,
-            start.to_rfc3339(),
-            end.to_rfc3339(),
-            timeframe
+            self.config.data_url, symbol, start.to_rfc3339(), end.to_rfc3339(), timeframe
         );
-
-        // Make the request
-        let response = reqwest::Client::new()
-            .get(&url)
-            .header("APCA-API-KEY-ID", &self.config.api_key)
-            .header("APCA-API-SECRET-KEY", &self.config.api_secret)
+        let resp = self
+            .auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options bars: {}", e)))?;
-
-        // Parse the response
-        let data = response
+        let data = resp
             .json::<serde_json::Value>()
             .await
             .map_err(|e| OptionsError::ParseError(format!("Failed to parse options bars: {}", e)))?;
-
         Ok(data)
     }
-
-    /// Place an order
-    pub async fn place_order(&self, order_req: OrderReq) -> Result<Order> {
-        debug!("Placing order: {:?}", order_req);
-        self.client
-            .issue::<Order>(&apca::api::v2::order::Post::new(order_req))
-            .await
-            .map_err(OptionsError::AlpacaError)
-    }
 }
+

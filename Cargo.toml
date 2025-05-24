@@ -1,13 +1,12 @@
 [package]
 name = "options-rs"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "Low-latency Alpaca Markets API client for options pricing and volatility surface calculations"
 authors = ["Options Team"]
 
 [dependencies]
 # Alpaca Markets API client
-apca = { version = "0.25.1" }
 
 # Async runtime
 tokio = { version = "1.28", features = ["full", "rt-multi-thread"] }
@@ -25,9 +24,8 @@ thiserror = "1.0"
 anyhow = "1.0"
 
 # Numerical computations
-ndarray = "0.15"
+ndarray = { version = "0.15", features = ["serde"] }
 statrs = "0.16"  # Statistical computations
-black_scholes = "0.5"  # Options pricing
 
 # Utilities
 serde = { version = "1.0", features = ["derive"] }
@@ -38,4 +36,4 @@ futures = "0.3"
 # Visualization (optional)
 plotters = "0.3"
 colorous = "1.0.10"
-websocket = "0.27.1"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }

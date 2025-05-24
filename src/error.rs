@@ -3,9 +3,6 @@ use thiserror::Error;
 /// Custom error types for the options-rs library
 #[derive(Error, Debug)]
 pub enum OptionsError {
-    /// Error when interacting with Alpaca API
-    #[error("Alpaca API error: {0}")]
-    AlpacaError(#[from] apca::Error),
 
     /// Error when parsing data
     #[error("Parse error: {0}")]

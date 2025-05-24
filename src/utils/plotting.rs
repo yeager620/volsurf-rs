@@ -52,7 +52,7 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
     
     // Create the plot
     let root = BitMapBackend::new(output_path, (800, 600)).into_drawing_area();
-    root.fill(&WHITE)?;
+    root.fill(&WHITE).map_err(|e| OptionsError::Other(e.to_string()))?;
     
     let mut chart = ChartBuilder::on(&root)
         .caption(
@@ -62,39 +62,48 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
         .margin(10)
         .x_label_area_size(40)
         .y_label_area_size(60)
-        .build_cartesian_2d(strike_min..strike_max, vol_min..vol_max)?;
+        .build_cartesian_2d(strike_min..strike_max, vol_min..vol_max)
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
     chart
         .configure_mesh()
         .x_desc("Strike Price")
         .y_desc("Implied Volatility")
         .axis_desc_style(("sans-serif", 15))
-        .draw()?;
+        .draw()
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
     // Draw the volatility smile
-    chart.draw_series(LineSeries::new(
-        valid_points.iter().map(|&(s, v)| (s, v)),
-        &BLUE,
-    ))?;
+    chart
+        .draw_series(LineSeries::new(
+            valid_points.iter().map(|&(s, v)| (s, v)),
+            &BLUE,
+        ))
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
     // Draw points
-    chart.draw_series(
-        valid_points
-            .iter()
-            .map(|&(s, v)| Circle::new((s, v), 3, BLUE.filled())),
-    )?;
+    chart
+        .draw_series(
+            valid_points
+                .iter()
+                .map(|&(s, v)| Circle::new((s, v), 3, BLUE.filled())),
+        )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
     // Add a note about the date
-    root.draw_text(
+    root
+        .draw_text(
         &format!("Generated: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
         &TextStyle::from(("sans-serif", 15)).color(&BLACK),
         (10, 570),
-    )?;
+    )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
-    root.present()?;
-    
+    root.present().map_err(|e| OptionsError::Other(e.to_string()))?;
+
     Ok(())
 }
+
 
 /// Plot a volatility term structure (volatility vs. time to expiration for a single strike)
 pub fn plot_volatility_term_structure<P: AsRef<Path>>(
@@ -136,7 +145,7 @@ pub fn plot_volatility_term_structure<P: AsRef<Path>>(
     
     // Create the plot
     let root = BitMapBackend::new(output_path, (800, 600)).into_drawing_area();
-    root.fill(&WHITE)?;
+    root.fill(&WHITE).map_err(|e| OptionsError::Other(e.to_string()))?;
     
     let mut chart = ChartBuilder::on(&root)
         .caption(
@@ -146,36 +155,43 @@ pub fn plot_volatility_term_structure<P: AsRef<Path>>(
         .margin(10)
         .x_label_area_size(40)
         .y_label_area_size(60)
-        .build_cartesian_2d(time_min..time_max, vol_min..vol_max)?;
+        .build_cartesian_2d(time_min..time_max, vol_min..vol_max)
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
     chart
         .configure_mesh()
         .x_desc("Time to Expiration (Years)")
         .y_desc("Implied Volatility")
         .axis_desc_style(("sans-serif", 15))
-        .draw()?;
+        .draw().map_err(|e| OptionsError::Other(e.to_string()))?;
     
     // Draw the term structure
-    chart.draw_series(LineSeries::new(
-        valid_points.iter().map(|&(t, v)| (t, v)),
-        &BLUE,
-    ))?;
+    chart
+        .draw_series(LineSeries::new(
+            valid_points.iter().map(|&(t, v)| (t, v)),
+            &BLUE,
+        ))
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
     // Draw points
-    chart.draw_series(
-        valid_points
-            .iter()
-            .map(|&(t, v)| Circle::new((t, v), 3, BLUE.filled())),
-    )?;
+    chart
+        .draw_series(
+            valid_points
+                .iter()
+                .map(|&(t, v)| Circle::new((t, v), 3, BLUE.filled())),
+        )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
     // Add a note about the date
-    root.draw_text(
+    root
+        .draw_text(
         &format!("Generated: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
         &TextStyle::from(("sans-serif", 15)).color(&BLACK),
         (10, 570),
-    )?;
+    )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
-    root.present()?;
+    root.present().map_err(|e| OptionsError::Other(e.to_string()))?;
     
     Ok(())
 }
@@ -230,7 +246,7 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
     
     // Create the plot
     let root = BitMapBackend::new(output_path, (800, 600)).into_drawing_area();
-    root.fill(&WHITE)?;
+    root.fill(&WHITE).map_err(|e| OptionsError::Other(e.to_string()))?;
     
     // Since plotters doesn't have built-in 3D surface plots, we'll create a heatmap instead
     let mut chart = ChartBuilder::on(&root)
@@ -241,14 +257,15 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
         .margin(10)
         .x_label_area_size(40)
         .y_label_area_size(60)
-        .build_cartesian_2d(strike_min..strike_max, time_min..time_max)?;
+        .build_cartesian_2d(strike_min..strike_max, time_min..time_max)
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
     chart
         .configure_mesh()
         .x_desc("Strike Price")
         .y_desc("Time to Expiration (Years)")
         .axis_desc_style(("sans-serif", 15))
-        .draw()?;
+        .draw().map_err(|e| OptionsError::Other(e.to_string()))?;
     
     // Create a color gradient for the heatmap
     let color_gradient = colorous::VIRIDIS;
@@ -264,13 +281,15 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
                 let rgb = RGBColor(color.r, color.g, color.b);
                 
                 // Draw a small rectangle for this point
-                chart.draw_series(std::iter::once(Rectangle::new(
+                chart
+                    .draw_series(std::iter::once(Rectangle::new(
                     [
                         (strike - 0.5 * strike_range / surface.strikes.len() as f64, time - 0.5 * time_range / times_to_expiration.len() as f64),
                         (strike + 0.5 * strike_range / surface.strikes.len() as f64, time + 0.5 * time_range / times_to_expiration.len() as f64),
                     ],
                     rgb.filled(),
-                )))?;
+                )))
+                    .map_err(|e| OptionsError::Other(e.to_string()))?;
             }
         }
     }
@@ -286,42 +305,52 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
         let color = color_gradient.eval_continuous(normalized_pos);
         let rgb = RGBColor(color.r, color.g, color.b);
         
-        root.draw_series(std::iter::once(Rectangle::new(
+        root.draw(
+            &Rectangle::new(
             [
                 (color_bar_x, color_bar_y + i),
                 (color_bar_x + color_bar_width, color_bar_y + i + 1),
             ],
             rgb.filled(),
-        )))?;
+        ))
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     }
     
     // Add labels for the color bar
-    root.draw_text(
+    root
+        .draw_text(
         &format!("{:.2}", vol_max),
         &TextStyle::from(("sans-serif", 12)).color(&BLACK),
         (color_bar_x + color_bar_width + 5, color_bar_y),
-    )?;
+    )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
-    root.draw_text(
+    root
+        .draw_text(
         &format!("{:.2}", vol_min),
         &TextStyle::from(("sans-serif", 12)).color(&BLACK),
         (color_bar_x + color_bar_width + 5, color_bar_y + color_bar_height),
-    )?;
+    )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
-    root.draw_text(
+    root
+        .draw_text(
         "IV",
         &TextStyle::from(("sans-serif", 12)).color(&BLACK),
         (color_bar_x + color_bar_width + 5, color_bar_y + color_bar_height / 2),
-    )?;
+    )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
     // Add a note about the date
-    root.draw_text(
+    root
+        .draw_text(
         &format!("Generated: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
         &TextStyle::from(("sans-serif", 15)).color(&BLACK),
         (10, 570),
-    )?;
+    )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
     
-    root.present()?;
+    root.present().map_err(|e| OptionsError::Other(e.to_string()))?;
     
     Ok(())
 }
