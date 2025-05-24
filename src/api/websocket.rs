@@ -1,117 +1,75 @@
 use crate::config::AlpacaConfig;
 use crate::error::{OptionsError, Result};
 use crate::models::{OptionContract, OptionQuote as ModelOptionQuote, OptionType};
+use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{self, Duration};
 use tracing::{debug, info, warn};
-use chrono::{DateTime, Utc};
-use futures::StreamExt;
 
-/// Market data types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "T")]
 pub enum MarketData {
-    /// Option quote
     #[serde(rename = "q")]
     OptionQuote(OptionQuote),
-    /// Option trade
     #[serde(rename = "t")]
     OptionTrade(OptionTrade),
-    /// Option bar
     #[serde(rename = "b")]
     OptionBar(OptionBar),
 }
 
-/// Option quote data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionQuote {
-    /// Symbol
-    pub s: String,
-    /// Bid price
-    pub bp: f64,
-    /// Bid size
-    pub bs: u64,
-    /// Ask price
-    pub ap: f64,
-    /// Ask size
+    pub s: String, // Symbol
+    pub bp: f64,   // Bid price
+    pub bs: u64,   // Bid size
+    pub ap: f64,   // Ask price
     #[serde(rename = "as")]
-    pub as_size: u64,
-    /// Timestamp
-    pub t: DateTime<Utc>,
-    /// Underlying price
+    pub as_size: u64, // Ask size
+    pub t: DateTime<Utc>, // Timestamp
     #[serde(default)]
-    pub up: f64,
-    /// Option symbol
-    pub option_symbol: String,
-    /// Strike price
-    pub strike: f64,
-    /// Expiration date
-    pub expiration: DateTime<Utc>,
-    /// Option type
-    pub option_type: OptionType,
+    pub up: f64, // Underlying price
+    pub option_symbol: String, // Option symbol
+    pub strike: f64, // Strike price
+    pub expiration: DateTime<Utc>, // Expiration date
+    pub option_type: OptionType, // Option type
 }
 
-/// Option trade data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionTrade {
-    /// Symbol
-    pub s: String,
-    /// Price
-    pub p: f64,
-    /// Size
-    pub sz: u64,
-    /// Timestamp
-    pub t: DateTime<Utc>,
-    /// Exchange
-    pub x: String,
-    /// Underlying price
+    pub s: String,        // Symbol
+    pub p: f64,           // Price
+    pub sz: u64,          // Size
+    pub t: DateTime<Utc>, // Timestamp
+    pub x: String,        // Exchange
     #[serde(default)]
-    pub up: f64,
-    /// Option symbol
-    pub option_symbol: String,
-    /// Strike price
-    pub strike: f64,
-    /// Expiration date
-    pub expiration: DateTime<Utc>,
-    /// Option type
-    pub option_type: OptionType,
+    pub up: f64, // Underlying price
+    pub option_symbol: String, // Option symbol
+    pub strike: f64,      // Strike price
+    pub expiration: DateTime<Utc>, // Expiration date
+    pub option_type: OptionType, // Option type
 }
 
-/// Option bar data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionBar {
-    /// Symbol
-    pub s: String,
-    /// Open price
-    pub o: f64,
-    /// High price
-    pub h: f64,
-    /// Low price
-    pub l: f64,
-    /// Close price
-    pub c: f64,
-    /// Volume
-    pub v: u64,
-    /// Timestamp
-    pub t: DateTime<Utc>,
-    /// Volume weighted average price
-    pub vw: f64,
-    /// Underlying price
+    pub s: String,        // Symbol
+    pub o: f64,           // Open price
+    pub h: f64,           // High price
+    pub l: f64,           // Low price
+    pub c: f64,           // Close price
+    pub v: u64,           // Volume
+    pub t: DateTime<Utc>, // Timestamp
+    pub vw: f64,          // Volume weighted average price
     #[serde(default)]
-    pub up: f64,
-    /// Option symbol
-    pub option_symbol: String,
-    /// Strike price
-    pub strike: f64,
-    /// Expiration date
-    pub expiration: DateTime<Utc>,
-    /// Option type
-    pub option_type: OptionType,
+    pub up: f64, // Underlying price
+    pub option_symbol: String, // Option symbol
+    pub strike: f64,      // Strike price
+    pub expiration: DateTime<Utc>, // Expiration date
+    pub option_type: OptionType, // Option type
 }
 
-/// Authentication message
 #[derive(Debug, Serialize)]
 struct Auth {
     action: String,
@@ -120,7 +78,6 @@ struct Auth {
 }
 
 impl Auth {
-    /// Create a new authentication message
     fn new(key: String, secret: String) -> Self {
         Self {
             action: "auth".to_string(),
@@ -130,7 +87,6 @@ impl Auth {
     }
 }
 
-/// Subscription message
 #[derive(Debug, Serialize)]
 struct Subscribe {
     action: String,
@@ -140,7 +96,6 @@ struct Subscribe {
 }
 
 impl Subscribe {
-    /// Create a new subscription
     fn new() -> Self {
         Self {
             action: "subscribe".to_string(),
@@ -150,33 +105,26 @@ impl Subscribe {
         }
     }
 
-    /// Add option quotes to the subscription
     fn option_quotes(mut self, symbols: Vec<String>) -> Self {
         self.quotes = Some(symbols);
         self
     }
 
-    /// Add option trades to the subscription
     fn option_trades(mut self, symbols: Vec<String>) -> Self {
         self.trades = Some(symbols);
         self
     }
 
-    /// Add option bars to the subscription
     fn option_bars(mut self, symbols: Vec<String>) -> Self {
         self.bars = Some(symbols);
         self
     }
 }
 
-/// WebSocket client for Alpaca Markets API
 pub struct WebSocketClient {
-    /// Configuration for the Alpaca API
-    config: AlpacaConfig,
-    /// Channel for sending market data
-    data_sender: mpsc::Sender<ModelOptionQuote>,
-    /// Channel for receiving market data
-    data_receiver: Arc<Mutex<mpsc::Receiver<ModelOptionQuote>>>,
+    config: AlpacaConfig,                        // Configuration for the Alpaca API
+    data_sender: mpsc::Sender<ModelOptionQuote>, // Channel for sending market data
+    data_receiver: Arc<Mutex<mpsc::Receiver<ModelOptionQuote>>>, // Channel for receiving market data
 }
 
 impl WebSocketClient {
@@ -190,7 +138,6 @@ impl WebSocketClient {
         }
     }
 
-    /// Connect to the WebSocket and start streaming data
     pub async fn connect(&self, symbols: Vec<String>) -> Result<()> {
         use futures::{SinkExt, StreamExt};
         use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
@@ -216,7 +163,10 @@ impl WebSocketClient {
         let symbols_clone = symbols.clone();
 
         tokio::spawn(async move {
-            info!("Starting options data stream for {} symbols", symbols_clone.len());
+            info!(
+                "Starting options data stream for {} symbols",
+                symbols_clone.len()
+            );
 
             let (ws_stream, _) = match connect_async(url).await {
                 Ok(conn) => conn,
@@ -264,8 +214,11 @@ impl WebSocketClient {
                         debug!("Received text message");
 
                         if text.contains(r#""T":"q""#) {
+                            // Fast path for quote messages
                             if let Ok(quote) = serde_json::from_str::<OptionQuote>(&text) {
-                                if let Some(contract) = OptionContract::from_occ_symbol(&quote.option_symbol) {
+                                if let Some(contract) =
+                                    OptionContract::from_occ_symbol(&quote.option_symbol)
+                                {
                                     let model_quote = ModelOptionQuote::new(
                                         contract,
                                         quote.bp,
@@ -312,26 +265,26 @@ impl WebSocketClient {
                                 warn!("Failed to parse message: {}", e);
                             }
                         }
-                    },
+                    }
                     Ok(Message::Binary(_)) => {
                         debug!("Received binary message");
-                    },
+                    }
                     Ok(Message::Ping(data)) => {
                         if let Err(e) = write.send(Message::Pong(data)).await {
                             warn!("Failed to send pong: {}", e);
                             break;
                         }
-                    },
+                    }
                     Ok(Message::Pong(_)) => {
                         debug!("Received pong");
-                    },
+                    }
                     Ok(Message::Close(_)) => {
                         info!("WebSocket closed");
                         break;
-                    },
+                    }
                     Ok(Message::Frame(_)) => {
                         debug!("Received frame message");
-                    },
+                    }
                     Err(e) => {
                         warn!("WebSocket error: {}", e);
                         break;
@@ -345,7 +298,6 @@ impl WebSocketClient {
         Ok(())
     }
 
-    /// Get the next option quote
     pub async fn next_option_quote(&self) -> Result<Option<ModelOptionQuote>> {
         let mut receiver = self.data_receiver.lock().await;
 
@@ -355,7 +307,6 @@ impl WebSocketClient {
         }
     }
 
-    /// Process option quotes with a callback function
     pub async fn process_option_quotes<F>(&self, mut callback: F) -> Result<()>
     where
         F: FnMut(ModelOptionQuote) -> Result<()>,
@@ -374,17 +325,8 @@ impl From<OptionQuote> for ModelOptionQuote {
     fn from(quote: OptionQuote) -> Self {
         let mid_price = (quote.bp + quote.ap) / 2.0;
 
-        // Create contract from option symbol if possible
         if let Some(contract) = OptionContract::from_occ_symbol(&quote.option_symbol) {
-            Self::new(
-                contract,
-                quote.bp,
-                quote.ap,
-                mid_price,
-                0,
-                0,
-                quote.up,
-            )
+            Self::new(contract, quote.bp, quote.ap, mid_price, 0, 0, quote.up)
         } else {
             // Fallback to creating a contract from available fields
             let contract = OptionContract::new(
@@ -394,15 +336,7 @@ impl From<OptionQuote> for ModelOptionQuote {
                 quote.expiration,
             );
 
-            Self::new(
-                contract,
-                quote.bp,
-                quote.ap,
-                mid_price,
-                0,
-                0,
-                quote.up,
-            )
+            Self::new(contract, quote.bp, quote.ap, mid_price, 0, 0, quote.up)
         }
     }
 }

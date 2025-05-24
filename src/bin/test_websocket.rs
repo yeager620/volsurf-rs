@@ -25,7 +25,10 @@ async fn main() -> Result<()> {
             count += 1;
             println!(
                 "Received quote: {} - Bid: {}, Ask: {}, Mid: {}",
-                quote.contract.option_symbol, quote.bid, quote.ask, quote.mid_price()
+                quote.contract.option_symbol,
+                quote.bid,
+                quote.ask,
+                quote.mid_price()
             );
         }
         sleep(Duration::from_millis(10)).await;

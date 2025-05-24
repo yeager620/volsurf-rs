@@ -61,13 +61,10 @@ impl Config {
     pub fn init_logging(&self) -> Result<()> {
         use tracing_subscriber::{fmt, EnvFilter};
 
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(&self.log_level));
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&self.log_level));
 
-        fmt()
-            .with_env_filter(filter)
-            .with_target(true)
-            .init();
+        fmt().with_env_filter(filter).with_target(true).init();
 
         Ok(())
     }

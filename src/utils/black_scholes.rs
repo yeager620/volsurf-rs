@@ -1,6 +1,6 @@
+use statrs::distribution::ContinuousCDF;
 use statrs::distribution::{Continuous, Normal};
 use statrs::statistics::Statistics;
-use statrs::distribution::ContinuousCDF;
 
 /// Calculate the Black-Scholes option price
 fn price(s: f64, k: f64, t: f64, r: f64, sigma: f64, is_call: bool) -> f64 {

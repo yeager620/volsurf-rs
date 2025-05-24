@@ -32,8 +32,7 @@ impl RestClient {
     }
 
     fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        req
-            .header("APCA-API-KEY-ID", &self.config.api_key)
+        req.header("APCA-API-KEY-ID", &self.config.api_key)
             .header("APCA-API-SECRET-KEY", &self.config.api_secret)
     }
 
@@ -71,9 +70,16 @@ impl RestClient {
     }
 
     /// get option contracts for an underlying symbol
-    pub async fn get_options_chain(&self, symbol: &str, expiration_date: Option<&str>) -> Result<serde_json::Value> {
+    pub async fn get_options_chain(
+        &self,
+        symbol: &str,
+        expiration_date: Option<&str>,
+    ) -> Result<serde_json::Value> {
         info!("Getting option contracts for {}", symbol);
-        let mut url = format!("{}/v2/options/contracts?underlying_symbols={}", self.config.data_url, symbol);
+        let mut url = format!(
+            "{}/v2/options/contracts?underlying_symbols={}",
+            self.config.data_url, symbol
+        );
 
         if let Some(date) = expiration_date {
             url.push_str(&format!("&expiration_date_lte={}", date));
@@ -85,10 +91,9 @@ impl RestClient {
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options chain: {}", e)))?;
 
-        let data = resp
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| OptionsError::ParseError(format!("Failed to parse options chain: {}", e)))?;
+        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse options chain: {}", e))
+        })?;
 
         Ok(data)
     }
@@ -104,7 +109,10 @@ impl RestClient {
         page_token: Option<&str>,
         sort: Option<&str>,
     ) -> Result<serde_json::Value> {
-        debug!("Getting options bars for {} from {} to {}", symbol, start, end);
+        debug!(
+            "Getting options bars for {} from {} to {}",
+            symbol, start, end
+        );
         let mut url = format!(
             "{}/v1beta1/options/bars?symbols={}&start={}&end={}&timeframe={}",
             self.config.data_url,
@@ -132,10 +140,9 @@ impl RestClient {
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options bars: {}", e)))?;
 
-        let data = resp
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| OptionsError::ParseError(format!("Failed to parse options bars: {}", e)))?;
+        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse options bars: {}", e))
+        })?;
 
         Ok(data)
     }
@@ -183,19 +190,15 @@ impl RestClient {
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options trades: {}", e)))?;
 
-        let data = resp
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| OptionsError::ParseError(format!("Failed to parse options trades: {}", e)))?;
+        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse options trades: {}", e))
+        })?;
 
         Ok(data)
     }
 
     /// get latest options quotes
-    pub async fn get_options_quotes(
-        &self,
-        symbols: &[&str],
-    ) -> Result<serde_json::Value> {
+    pub async fn get_options_quotes(&self, symbols: &[&str]) -> Result<serde_json::Value> {
         debug!("Getting latest options quotes for symbols: {:?}", symbols);
         let symbols_str = symbols.join(",");
         let url = format!(
@@ -209,10 +212,9 @@ impl RestClient {
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options quotes: {}", e)))?;
 
-        let data = resp
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| OptionsError::ParseError(format!("Failed to parse options quotes: {}", e)))?;
+        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse options quotes: {}", e))
+        })?;
 
         Ok(data)
     }
@@ -248,16 +250,14 @@ impl RestClient {
             url.push_str(&format!("&page_token={}", token));
         }
 
-        let resp = self
-            .auth(self.client.get(&url))
-            .send()
-            .await
-            .map_err(|e| OptionsError::Other(format!("Failed to get option snapshots: {}", e)))?;
+        let resp =
+            self.auth(self.client.get(&url)).send().await.map_err(|e| {
+                OptionsError::Other(format!("Failed to get option snapshots: {}", e))
+            })?;
 
-        let data = resp
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| OptionsError::ParseError(format!("Failed to parse option snapshots: {}", e)))?;
+        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse option snapshots: {}", e))
+        })?;
 
         Ok(data)
     }
@@ -285,33 +285,52 @@ impl RestClient {
         );
 
         let mut query_params = Vec::new();
-        if let Some(feed_val) = feed { query_params.push(format!("feed={}", feed_val)); }
-        if let Some(limit_val) = limit { query_params.push(format!("limit={}", limit_val)); }
-        if let Some(updated) = updated_since { query_params.push(format!("updated_since={}", updated.to_rfc3339())); }
-        if let Some(token) = page_token { query_params.push(format!("page_token={}", token)); }
-        if let Some(t) = option_type { query_params.push(format!("type={}", t)); }
-        if let Some(v) = strike_price_gte { query_params.push(format!("strike_price_gte={}", v)); }
-        if let Some(v) = strike_price_lte { query_params.push(format!("strike_price_lte={}", v)); }
-        if let Some(v) = expiration_date { query_params.push(format!("expiration_date={}", v)); }
-        if let Some(v) = expiration_date_gte { query_params.push(format!("expiration_date_gte={}", v)); }
-        if let Some(v) = expiration_date_lte { query_params.push(format!("expiration_date_lte={}", v)); }
-        if let Some(v) = root_symbol { query_params.push(format!("root_symbol={}", v)); }
+        if let Some(feed_val) = feed {
+            query_params.push(format!("feed={}", feed_val));
+        }
+        if let Some(limit_val) = limit {
+            query_params.push(format!("limit={}", limit_val));
+        }
+        if let Some(updated) = updated_since {
+            query_params.push(format!("updated_since={}", updated.to_rfc3339()));
+        }
+        if let Some(token) = page_token {
+            query_params.push(format!("page_token={}", token));
+        }
+        if let Some(t) = option_type {
+            query_params.push(format!("type={}", t));
+        }
+        if let Some(v) = strike_price_gte {
+            query_params.push(format!("strike_price_gte={}", v));
+        }
+        if let Some(v) = strike_price_lte {
+            query_params.push(format!("strike_price_lte={}", v));
+        }
+        if let Some(v) = expiration_date {
+            query_params.push(format!("expiration_date={}", v));
+        }
+        if let Some(v) = expiration_date_gte {
+            query_params.push(format!("expiration_date_gte={}", v));
+        }
+        if let Some(v) = expiration_date_lte {
+            query_params.push(format!("expiration_date_lte={}", v));
+        }
+        if let Some(v) = root_symbol {
+            query_params.push(format!("root_symbol={}", v));
+        }
 
         if !query_params.is_empty() {
             url.push('?');
             url.push_str(&query_params.join("&"));
         }
 
-        let resp = self
-            .auth(self.client.get(&url))
-            .send()
-            .await
-            .map_err(|e| OptionsError::Other(format!("Failed to get option chain snapshots: {}", e)))?;
+        let resp = self.auth(self.client.get(&url)).send().await.map_err(|e| {
+            OptionsError::Other(format!("Failed to get option chain snapshots: {}", e))
+        })?;
 
-        let data = resp
-            .json::<serde_json::Value>()
-            .await
-            .map_err(|e| OptionsError::ParseError(format!("Failed to parse option chain snapshots: {}", e)))?;
+        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse option chain snapshots: {}", e))
+        })?;
 
         Ok(data)
     }
