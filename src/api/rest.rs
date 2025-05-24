@@ -89,19 +89,35 @@ pub struct OptionQuotesResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionLastTrade {
     pub t: DateTime<Utc>,
+    #[serde(alias = "p")]
     pub price: f64,
+    #[serde(alias = "s")]
     pub size: u64,
+    #[serde(default)]
     pub conditions: Vec<String>,
+    #[serde(alias = "x")]
     pub exchange_code: String,
+    #[serde(alias = "c")]
+    pub condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionLastQuote {
     pub t: DateTime<Utc>,
+    #[serde(alias = "bp")]
     pub bid: f64,
+    #[serde(alias = "ap")]
     pub ask: f64,
+    #[serde(alias = "bs")]
     pub size_bid: u64,
+    #[serde(alias = "as")]
     pub size_ask: u64,
+    #[serde(alias = "bx")]
+    pub bid_exchange: Option<String>,
+    #[serde(alias = "ax")]
+    pub ask_exchange: Option<String>,
+    #[serde(alias = "c")]
+    pub condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,19 +131,28 @@ pub struct OptionGreeks {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionSnapshot {
+    #[serde(default)]
     pub symbol: String,
+    #[serde(default)]
     pub underlying_symbol: String,
+    #[serde(default)]
     pub strike_price: f64,
+    #[serde(default)]
     pub expiration_date: String,
+    #[serde(default)]
     pub contract_type: String,
     pub last_trade: Option<OptionLastTrade>,
     pub last_quote: Option<OptionLastQuote>,
     pub greeks: Option<OptionGreeks>,
+    pub dailyBar: Option<OptionBar>,
+    pub minuteBar: Option<OptionBar>,
+    pub prevDailyBar: Option<OptionBar>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionSnapshotsResponse {
     pub snapshots: std::collections::HashMap<String, OptionSnapshot>,
+    pub next_page_token: Option<String>,
 }
 
 pub struct RestClient {

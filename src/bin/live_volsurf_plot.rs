@@ -4,11 +4,12 @@ use options_rs::api::{RestClient, WebSocketClient};
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
 use options_rs::models::volatility::{ImpliedVolatility, VolatilitySurface};
-use options_rs::models::{OptionContract, OptionQuote};
+use options_rs::models::{OptionContract, OptionQuote, OptionType};
 use options_rs::utils::{
     plot_volatility_smile, plot_volatility_smile_in_memory, plot_volatility_surface,
     plot_volatility_surface_in_memory,
 };
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -69,8 +70,16 @@ impl eframe::App for VolatilitySurfaceApp {
 
             ui.horizontal(|ui| {
                 ui.label("Data Source:");
-                ui.radio_value(&mut self.data_source, DataSource::LiveUpdates, "Live Updates (placeholder)");
-                ui.radio_value(&mut self.data_source, DataSource::MostRecentOptionsChain, "Most Recent Options Chain");
+                ui.radio_value(
+                    &mut self.data_source,
+                    DataSource::LiveUpdates,
+                    "Live Updates (placeholder)",
+                );
+                ui.radio_value(
+                    &mut self.data_source,
+                    DataSource::MostRecentOptionsChain,
+                    "Most Recent Options Chain",
+                );
             });
 
             ui.horizontal(|ui| {
@@ -185,7 +194,7 @@ async fn run_volatility_surface_plot(
                 "Starting real-time volatility surface monitor for {} (placeholder)",
                 symbol
             );
-        },
+        }
         DataSource::MostRecentOptionsChain => {
             info!(
                 "Starting most recent options chain volatility surface for {}",
@@ -210,10 +219,15 @@ async fn run_volatility_surface_plot(
         )
         .await?;
     let options = options_data.results;
-    info!("Found {} options for {}", options.len(), symbol);
+    info!(
+        "Found {} options for {} using get_options_chain API",
+        options.len(),
+        symbol
+    );
 
-    if options.is_empty() {
-        warn!("No options found for {}. Exiting.", symbol);
+    // Only exit early if we're using LiveUpdates data source and no options are found
+    if options.is_empty() && data_source == DataSource::LiveUpdates {
+        warn!("No options found for {} using get_options_chain API. This symbol may not have options available or there might be an issue with the API. Exiting.", symbol);
         return Ok(());
     }
 
@@ -276,12 +290,19 @@ async fn run_volatility_surface_plot(
                     }
                 }
             });
-        },
+        }
         DataSource::MostRecentOptionsChain => {
             // Fetch the most recent options chain using the snapshots API
-            info!("Fetching most recent options chain snapshots for {}", symbol);
+            info!(
+                "Fetching most recent options chain snapshots for {}",
+                symbol
+            );
 
             // Get option chain snapshots
+            info!(
+                "Calling get_option_chain_snapshots API for {} with feed=indicative and limit=100",
+                symbol
+            );
             let snapshots = rest_client
                 .get_option_chain_snapshots(
                     symbol,
@@ -299,41 +320,292 @@ async fn run_volatility_surface_plot(
                 )
                 .await?;
 
-            info!("Fetched {} option snapshots", snapshots.snapshots.len());
+            let snapshot_count = snapshots.snapshots.len();
+            info!("Fetched {} option snapshots for {}", snapshot_count, symbol);
 
-            // Convert snapshots to option quotes
-            let mut quotes = latest_quotes.write().await;
-            for (symbol, snapshot) in snapshots.snapshots.iter() {
-                if let Some(contract) = OptionContract::from_occ_symbol(symbol) {
-                    if let (Some(last_quote), Some(last_trade)) = (&snapshot.last_quote, &snapshot.last_trade) {
-                        // Use the trade price as the last price
-                        let last_price = last_trade.price;
+            if snapshot_count == 0 {
+                warn!("No option snapshots found for {} using get_option_chain_snapshots API with feed=indicative.", symbol);
+                warn!("This could be because:");
+                warn!(
+                    "1. The symbol {} does not have any options available",
+                    symbol
+                );
+                warn!(
+                    "2. The symbol {} is not valid or not supported by Alpaca",
+                    symbol
+                );
+                warn!(
+                    "3. There might be an issue with your Alpaca API credentials or subscription"
+                );
+                warn!("4. The Alpaca API might be experiencing issues");
+                warn!("Please check the symbol and try again, or try a different symbol.");
+            }
 
-                        // Estimate underlying price (not ideal but workable)
-                        // In a real implementation, you might want to fetch the underlying price separately
-                        let underlying_price = if contract.is_call() {
-                            contract.strike + last_quote.ask - last_quote.bid
-                        } else {
-                            contract.strike - last_quote.ask + last_quote.bid
-                        };
+            // Log the first few snapshots for debugging
+            if snapshot_count > 0 {
+                let sample_count = std::cmp::min(5, snapshot_count);
+                info!("Sample of {} snapshots for debugging:", sample_count);
+                for (i, (symbol, snapshot)) in snapshots.snapshots.iter().take(sample_count).enumerate() {
+                    info!("Snapshot {}: Symbol={}", i+1, symbol);
 
-                        let quote = OptionQuote {
-                            contract,
-                            bid: last_quote.bid,
-                            ask: last_quote.ask,
-                            last: last_price,
-                            volume: last_trade.size,
-                            open_interest: 0, // Not available in snapshots
-                            underlying_price,
-                            timestamp: last_quote.t,
-                        };
+                    // Log the raw snapshot data to see its structure
+                    info!("  Raw snapshot data: {:?}", snapshot);
 
-                        quotes.insert(symbol.clone(), quote);
+                    if let Some(last_quote) = &snapshot.last_quote {
+                        info!("  Last Quote: bid={}, ask={}, timestamp={}", last_quote.bid, last_quote.ask, last_quote.t);
+                    } else {
+                        info!("  No Last Quote available");
+                    }
+                    if let Some(last_trade) = &snapshot.last_trade {
+                        info!("  Last Trade: price={}, size={}, timestamp={}", last_trade.price, last_trade.size, last_trade.t);
+                    } else {
+                        info!("  No Last Trade available");
                     }
                 }
             }
 
-            info!("Processed {} option quotes from snapshots", quotes.len());
+            // Convert snapshots to option quotes
+            let mut quotes = latest_quotes.write().await;
+            let mut parse_failures = 0;
+            let mut missing_data_count = 0;
+            let mut fallback_successes = 0;
+            let mut manual_contract_creations = 0;
+
+            for (symbol_key, snapshot) in snapshots.snapshots.iter() {
+                info!("Processing snapshot for symbol key: {}", symbol_key);
+
+                // Try to create a contract from the OCC symbol first
+                let contract_result = OptionContract::from_occ_symbol(symbol_key);
+
+                // If that fails, try to create a contract manually from the OCC symbol
+                let contract = match contract_result {
+                    Some(c) => {
+                        info!("Successfully parsed OCC symbol: {} -> {}", symbol_key, c.option_symbol);
+                        Some(c)
+                    },
+                    None => {
+                        parse_failures += 1;
+                        warn!("Failed to parse OCC symbol: {}", symbol_key);
+
+                        // Try to manually parse the OCC symbol
+                        // Format: AAPL250530C00145000
+                        let c_pos = symbol_key.find('C');
+                        let p_pos = symbol_key.find('P');
+
+                        if c_pos.is_some() || p_pos.is_some() {
+                            let type_pos = if c_pos.is_some() { c_pos.unwrap() } else { p_pos.unwrap() };
+
+                            if type_pos >= 6 && type_pos + 1 < symbol_key.len() {
+                                let underlying = &symbol_key[0..(type_pos - 6)];
+                                let date_str = &symbol_key[(type_pos - 6)..type_pos];
+                                let option_type_char = symbol_key.chars().nth(type_pos).unwrap();
+                                let strike_str = &symbol_key[(type_pos + 1)..];
+
+                                info!("Manual parsing: underlying={}, date={}, type={}, strike={}", 
+                                      underlying, date_str, option_type_char, strike_str);
+
+                                // Try to parse the date
+                                if date_str.len() == 6 {
+                                    if let (Ok(year), Ok(month), Ok(day)) = (
+                                        date_str[0..2].parse::<i32>(),
+                                        date_str[2..4].parse::<u32>(),
+                                        date_str[4..6].parse::<u32>()
+                                    ) {
+                                        // Try to parse the strike price
+                                        if let Ok(strike_int) = strike_str.parse::<u32>() {
+                                            let strike = strike_int as f64 / 1000.0;
+
+                                            // Create the expiration date
+                                            if let Some(naive_date) = chrono::NaiveDate::from_ymd_opt(2000 + year, month, day) {
+                                                if let Some(naive_datetime) = naive_date.and_hms_opt(16, 0, 0) {
+                                                    if let Some(expiration) = naive_datetime.and_local_timezone(chrono::Utc).single() {
+                                                        let option_type = if option_type_char == 'C' {
+                                                            OptionType::Call
+                                                        } else {
+                                                            OptionType::Put
+                                                        };
+
+                                                        let contract = OptionContract::new(
+                                                            underlying.to_string(),
+                                                            option_type,
+                                                            strike,
+                                                            expiration
+                                                        );
+
+                                                        manual_contract_creations += 1;
+                                                        info!("Manually created contract: {}", contract.option_symbol);
+                                                        Some(contract)
+                                                    } else {
+                                                        warn!("Failed to convert datetime to UTC");
+                                                        None
+                                                    }
+                                                } else {
+                                                    warn!("Failed to create datetime");
+                                                    None
+                                                }
+                                            } else {
+                                                warn!("Failed to create date from {}-{}-{}", 2000 + year, month, day);
+                                                None
+                                            }
+                                        } else {
+                                            warn!("Failed to parse strike price: {}", strike_str);
+                                            None
+                                        }
+                                    } else {
+                                        warn!("Failed to parse date components from: {}", date_str);
+                                        None
+                                    }
+                                } else {
+                                    warn!("Date string not 6 characters: {}", date_str);
+                                    None
+                                }
+                            } else {
+                                warn!("Invalid type position: {}", type_pos);
+                                None
+                            }
+                        } else {
+                            warn!("No 'C' or 'P' found in symbol: {}", symbol_key);
+                            None
+                        }
+                    }
+                };
+
+                // If we have a valid contract, try to create an option quote
+                if let Some(contract) = contract {
+                    // Extract quote data from various sources
+                    let mut bid: Option<f64> = None;
+                    let mut ask: Option<f64> = None;
+                    let mut last_price: Option<f64> = None;
+                    let mut volume: Option<u64> = None;
+                    let mut timestamp: Option<DateTime<Utc>> = None;
+
+                    // Try to get data from last_quote and last_trade first
+                    if let Some(quote) = &snapshot.last_quote {
+                        bid = Some(quote.bid);
+                        ask = Some(quote.ask);
+                        timestamp = Some(quote.t);
+                    }
+
+                    if let Some(trade) = &snapshot.last_trade {
+                        last_price = Some(trade.price);
+                        volume = Some(trade.size);
+                        if timestamp.is_none() {
+                            timestamp = Some(trade.t);
+                        }
+                    }
+
+                    // If we don't have bid/ask from last_quote, try to get from dailyBar or minuteBar
+                    if bid.is_none() || ask.is_none() {
+                        if let Some(bar) = &snapshot.dailyBar {
+                            // Use close as both bid and ask if we don't have them
+                            if bid.is_none() {
+                                bid = Some(bar.c * 0.99); // Slightly lower than close for bid
+                            }
+                            if ask.is_none() {
+                                ask = Some(bar.c * 1.01); // Slightly higher than close for ask
+                            }
+                            if timestamp.is_none() {
+                                timestamp = Some(bar.t);
+                            }
+                        } else if let Some(bar) = &snapshot.minuteBar {
+                            // Use close as both bid and ask if we don't have them
+                            if bid.is_none() {
+                                bid = Some(bar.c * 0.99); // Slightly lower than close for bid
+                            }
+                            if ask.is_none() {
+                                ask = Some(bar.c * 1.01); // Slightly higher than close for ask
+                            }
+                            if timestamp.is_none() {
+                                timestamp = Some(bar.t);
+                            }
+                        }
+                    }
+
+                    // If we don't have last_price, try to get from dailyBar or minuteBar
+                    if last_price.is_none() {
+                        if let Some(bar) = &snapshot.dailyBar {
+                            last_price = Some(bar.c); // Use close as last price
+                            if volume.is_none() {
+                                volume = Some(bar.v);
+                            }
+                        } else if let Some(bar) = &snapshot.minuteBar {
+                            last_price = Some(bar.c); // Use close as last price
+                            if volume.is_none() {
+                                volume = Some(bar.v);
+                            }
+                        } else if let Some(bar) = &snapshot.prevDailyBar {
+                            last_price = Some(bar.c); // Use close as last price
+                            if volume.is_none() {
+                                volume = Some(bar.v);
+                            }
+                        }
+                    }
+
+                    // If we still don't have a timestamp, use current time
+                    if timestamp.is_none() {
+                        timestamp = Some(Utc::now());
+                    }
+
+                    debug!("Extracted data for {}: bid={:?}, ask={:?}, last_price={:?}, volume={:?}, timestamp={:?}",
+                           symbol, bid, ask, last_price, volume, timestamp);
+
+                    if bid.is_some() && ask.is_some() && last_price.is_some() && timestamp.is_some() {
+                        let bid = bid.unwrap();
+                        let ask = ask.unwrap();
+                        let last_price = last_price.unwrap();
+                        let volume = volume.unwrap_or(0);
+                        let timestamp = timestamp.unwrap();
+
+                        // Estimate underlying price (not ideal but workable)
+                        // In a real implementation, you might want to fetch the underlying price separately
+                        let underlying_price = if contract.is_call() {
+                            contract.strike + ask - bid
+                        } else {
+                            contract.strike - ask + bid
+                        };
+
+                        let quote = OptionQuote {
+                            contract,
+                            bid,
+                            ask,
+                            last: last_price,
+                            volume,
+                            open_interest: 0, // Not available in snapshots
+                            underlying_price,
+                            timestamp,
+                        };
+
+                        quotes.insert(symbol_key.to_string(), quote);
+                    } else {
+                        missing_data_count += 1;
+                        debug!(
+                            "Skipping option {} because it's missing required price data",
+                            symbol_key
+                        );
+                    }
+                }
+            }
+
+
+            info!("OCC symbol parse failures: {}/{}", parse_failures, snapshot_count);
+            info!("Fallback contract creations: {}/{}", fallback_successes, parse_failures);
+            info!("Missing quote/trade data: {}/{}", missing_data_count, snapshot_count);
+
+            let quote_count = quotes.len();
+            info!("Processed {} option quotes from snapshots", quote_count);
+
+            if quote_count == 0 {
+                warn!(
+                    "No valid option quotes could be created from snapshots for {}.",
+                    symbol
+                );
+                warn!("This could be because:");
+                warn!("1. The snapshots don't contain the necessary quote and trade data");
+                warn!("2. There might be an issue with parsing the OCC symbols");
+                warn!("3. The Alpaca API might be returning incomplete data");
+                warn!("Please try a different symbol or check your API subscription.");
+                return Ok(());
+            }
         }
     }
 
@@ -357,10 +629,14 @@ async fn run_volatility_surface_plot(
                 drop(quotes);
 
                 // Convert Vec<String> to Vec<&str> for the API call
-                let option_symbols_str: Vec<&str> = option_symbols_clone.iter().map(AsRef::as_ref).collect();
+                let option_symbols_str: Vec<&str> =
+                    option_symbols_clone.iter().map(AsRef::as_ref).collect();
 
                 // Fetch latest quotes using the REST API
-                match rest_client_clone.get_options_quotes(&option_symbols_str).await {
+                match rest_client_clone
+                    .get_options_quotes(&option_symbols_str)
+                    .await
+                {
                     Ok(response) => {
                         let quotes_response = response.quotes;
                         if quotes_response.is_empty() {
@@ -371,7 +647,8 @@ async fn run_volatility_surface_plot(
                         info!("Fetched {} option quotes", quotes_response.len());
 
                         // Convert API quotes to OptionQuote objects
-                        quotes_vec = quotes_response.iter()
+                        quotes_vec = quotes_response
+                            .iter()
                             .filter_map(|(symbol, quote)| {
                                 if let Some(contract) = OptionContract::from_occ_symbol(symbol) {
                                     // Estimate underlying price (not ideal but workable)
@@ -402,7 +679,7 @@ async fn run_volatility_surface_plot(
                             info!("No valid option quotes could be created, waiting for data...");
                             continue;
                         }
-                    },
+                    }
                     Err(e) => {
                         warn!("Failed to fetch option quotes: {}", e);
                         continue;
@@ -444,11 +721,23 @@ async fn run_volatility_surface_plot(
             };
 
             if ivs.is_empty() {
-                warn!("No valid implied volatilities calculated");
+                warn!(
+                    "No valid implied volatilities calculated for {}",
+                    symbol_clone
+                );
+                warn!("This could be because:");
+                warn!("1. The option quotes don't have valid bid/ask prices");
+                warn!("2. The implied volatility calculation failed due to numerical issues");
+                warn!("3. The options might be too far from the money or too close to expiration");
+                warn!("Please try a different symbol or check the option data quality.");
                 continue;
             }
 
-            info!("Calculated {} implied volatilities", ivs.len());
+            info!(
+                "Calculated {} implied volatilities for {}",
+                ivs.len(),
+                symbol_clone
+            );
 
             let mut should_create_new = false;
             {
@@ -596,16 +885,29 @@ async fn main() -> Result<()> {
         let symbol = args[1].clone();
         info!("Ticker provided as command-line argument: {}", symbol);
         // Default to most recent options chain for command-line usage
-        run_volatility_surface_plot(&symbol, plot_sender.clone(), DataSource::MostRecentOptionsChain).await?;
+        run_volatility_surface_plot(
+            &symbol,
+            plot_sender.clone(),
+            DataSource::MostRecentOptionsChain,
+        )
+        .await?;
         return Ok(());
     }
 
     info!("Starting GUI for ticker input");
     let plotting_task = tokio::spawn(async move {
         while let Some((ticker, data_source)) = ticker_receiver.recv().await {
-            info!("Received ticker from GUI: {} with data source: {:?}", ticker, data_source);
-            if let Err(e) = run_volatility_surface_plot(&ticker, plot_sender.clone(), data_source).await {
-                warn!("Error plotting volatility surface for {} with data source {:?}: {}", ticker, data_source, e);
+            info!(
+                "Received ticker from GUI: {} with data source: {:?}",
+                ticker, data_source
+            );
+            if let Err(e) =
+                run_volatility_surface_plot(&ticker, plot_sender.clone(), data_source).await
+            {
+                warn!(
+                    "Error plotting volatility surface for {} with data source {:?}: {}",
+                    ticker, data_source, e
+                );
             }
         }
     });
