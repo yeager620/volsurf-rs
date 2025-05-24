@@ -1,10 +1,14 @@
 use eframe::egui;
+use image;
 use options_rs::api::{RestClient, WebSocketClient};
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
 use options_rs::models::volatility::{ImpliedVolatility, VolatilitySurface};
 use options_rs::models::OptionContract;
-use options_rs::utils::{plot_volatility_smile, plot_volatility_surface};
+use options_rs::utils::{
+    plot_volatility_smile, plot_volatility_smile_in_memory, plot_volatility_surface,
+    plot_volatility_surface_in_memory,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -13,14 +17,41 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing::{debug, info, warn};
 
+struct PlotImages {
+    surface: Option<egui::TextureHandle>,
+    smile: Option<egui::TextureHandle>,
+}
+
+struct PlotData {
+    surface_png: Vec<u8>,
+    smile_png: Option<Vec<u8>>,
+}
+
 struct VolatilitySurfaceApp {
     ticker_input: String,
     status: String,
     ticker_sender: mpsc::Sender<String>,
+    plot_receiver: mpsc::Receiver<PlotData>,
+    plots: PlotImages,
 }
 
 impl eframe::App for VolatilitySurfaceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        while let Ok(plot_data) = self.plot_receiver.try_recv() {
+            self.status = "Received new plot data".to_string();
+            if !plot_data.surface_png.is_empty() {
+                let surface_texture =
+                    load_texture_from_png(ctx, &plot_data.surface_png, "surface_texture");
+                self.plots.surface = Some(surface_texture);
+            }
+            if let Some(smile_png) = plot_data.smile_png {
+                if !smile_png.is_empty() {
+                    let smile_texture = load_texture_from_png(ctx, &smile_png, "smile_texture");
+                    self.plots.smile = Some(smile_texture);
+                }
+            }
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Live Volatility Surface Plotter");
 
@@ -36,7 +67,6 @@ impl eframe::App for VolatilitySurfaceApp {
                         self.status =
                             format!("Starting volatility surface plotting for {}", ticker);
 
-                        // Send the ticker to the plotting thread
                         if let Err(e) = self.ticker_sender.try_send(ticker) {
                             self.status = format!("Error: {}", e);
                         }
@@ -47,10 +77,45 @@ impl eframe::App for VolatilitySurfaceApp {
             ui.separator();
             ui.label(&self.status);
             ui.separator();
-            ui.label("The volatility surface will be plotted in the output directory.");
-            ui.label("Press Ctrl+C in the terminal to exit the application.");
+
+            if self.plots.surface.is_some() || self.plots.smile.is_some() {
+                _frame.set_window_size(egui::vec2(1000.0, 700.0));
+
+                ui.columns(2, |columns| {
+                    if let Some(ref surface) = self.plots.surface {
+                        columns[0].heading("Volatility Surface");
+                        columns[0].image(surface, egui::vec2(480.0, 360.0));
+                    } else {
+                        columns[0].label("Volatility Surface: Waiting for data...");
+                    }
+                    if let Some(ref smile) = self.plots.smile {
+                        columns[1].heading("Volatility Smile");
+                        columns[1].image(smile, egui::vec2(480.0, 360.0));
+                    } else {
+                        columns[1].label("Volatility Smile: Waiting for data...");
+                    }
+                });
+            } else {
+                ui.label("Waiting for plot data...");
+                ui.label("Press Ctrl+C in the terminal to exit the application.");
+            }
         });
     }
+}
+
+fn load_texture_from_png(
+    ctx: &egui::Context,
+    png_data: &[u8],
+    texture_id: &str,
+) -> egui::TextureHandle {
+    let image = image::load_from_memory(png_data)
+        .expect("Failed to load PNG data")
+        .to_rgba8();
+    let size = [image.width() as _, image.height() as _];
+    let image_data =
+        egui::ColorImage::from_rgba_unmultiplied(size, image.as_flat_samples().as_slice());
+
+    ctx.load_texture(texture_id, image_data, egui::TextureOptions::default())
 }
 
 pub fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
@@ -86,7 +151,10 @@ pub fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
     Ok(options)
 }
 
-async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
+async fn run_volatility_surface_plot(
+    symbol: &str,
+    plot_sender: mpsc::Sender<PlotData>,
+) -> Result<()> {
     let config = Config::from_env()?;
 
     info!(
@@ -98,8 +166,18 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
     let ws_client = WebSocketClient::new(config.alpaca.clone());
 
     info!("Fetching initial options chain for {}", symbol);
-    let options_data = rest_client.get_options_chain(symbol, None).await?;
-    let options = parse_options_chain(&options_data)?;
+    let options_data = rest_client
+        .get_options_chain(
+            symbol, None, // expiration_date
+            None, // option_type
+            None, // strike_lower
+            None, // strike_upper
+            None, // limit_per_expiration
+            None, // limit_strikes
+            None, // greeks
+        )
+        .await?;
+    let options = options_data.results;
     info!("Found {} options for {}", options.len(), symbol);
 
     if options.is_empty() {
@@ -107,10 +185,7 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
         return Ok(());
     }
 
-    let option_symbols: Vec<String> = options
-        .iter()
-        .map(|opt| opt.option_symbol.clone())
-        .collect();
+    let option_symbols: Vec<String> = options.iter().map(|opt| opt.symbol.clone()).collect();
 
     let latest_quotes = Arc::new(RwLock::new(HashMap::new()));
     let surface = Arc::new(RwLock::new(None));
@@ -130,13 +205,10 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
     let quotes_clone = latest_quotes.clone();
     let quote_task = tokio::spawn(async move {
         info!("Starting quote collection task");
-        // Get notification channel to be notified when new data is available
         let mut notification_rx = ws_client.get_notification_channel();
-        // Define batch size for processing quotes
         let batch_size = 50;
 
         loop {
-            // Process quotes in batches for better efficiency
             match ws_client.next_option_quotes_batch(batch_size).await {
                 Ok(batch) => {
                     if !batch.is_empty() {
@@ -153,17 +225,13 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
                 }
             }
 
-            // Wait for notification of new data instead of busy waiting with sleep
             match notification_rx.recv().await {
                 Ok(_) => {
-                    // New data is available, continue the loop to process it
                     continue;
                 }
                 Err(e) => {
-                    // If the channel is closed, reconnect to it
                     warn!("Notification channel error: {}, reconnecting", e);
                     notification_rx = ws_client.get_notification_channel();
-                    // Short sleep to avoid tight loop in case of persistent errors
                     sleep(Duration::from_millis(100)).await;
                 }
             }
@@ -186,16 +254,12 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
                 continue;
             }
 
-            // Clone the quotes to avoid holding the lock during computation
             let quotes_vec: Vec<_> = quotes.values().cloned().collect();
-            drop(quotes); // Release the lock before heavy computation
+            drop(quotes); 
 
-            // Offload compute-intensive tasks to a blocking task
             let ivs_result = tokio::task::spawn_blocking(move || {
-                // Use rayon's parallel iterator for parallel processing
                 use rayon::prelude::*;
 
-                // Calculate implied volatilities in parallel
                 let ivs: Vec<_> = quotes_vec
                     .into_par_iter()
                     .filter_map(|quote| {
@@ -230,7 +294,6 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
 
             info!("Calculated {} implied volatilities", ivs.len());
 
-            // Check if we already have a surface to update
             let mut should_create_new = false;
             {
                 let surface_guard = surface_clone.read().await;
@@ -238,7 +301,6 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
             }
 
             if should_create_new {
-                // Create a new surface if we don't have one yet
                 match VolatilitySurface::new(symbol_clone.clone(), &ivs) {
                     Ok(new_surface) => {
                         let mut surface_guard = surface_clone.write().await;
@@ -250,7 +312,6 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
                     }
                 }
             } else {
-                // Update existing surface
                 let mut surface_guard = surface_clone.write().await;
                 if let Some(ref mut existing_surface) = *surface_guard {
                     match existing_surface.update(&ivs) {
@@ -274,6 +335,7 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
     let max_update_interval = Duration::from_secs(10); // force update after this time even if no changes
     let output_dir_clone = output_dir.to_path_buf();
     let symbol_clone = symbol.to_string();
+    let plot_sender_clone = plot_sender.clone();
 
     let plot_task = tokio::spawn(async move {
         let mut last_update_time = std::time::Instant::now();
@@ -287,35 +349,60 @@ async fn run_volatility_surface_plot(symbol: &str) -> Result<()> {
                 let current_version = surface.get_version();
                 let time_since_update = last_update_time.elapsed();
 
-                // Only update visualizations if the surface has changed or max interval has passed
                 if current_version > last_surface_version || time_since_update > max_update_interval
                 {
-                    // update surface
-                    let surface_path = output_dir_clone.join("volatility_surface.png");
-                    if let Err(e) = plot_volatility_surface(surface, &surface_path) {
-                        warn!("Failed to plot vol surface: {}", e);
+                    let mut plot_data = PlotData {
+                        surface_png: Vec::new(),
+                        smile_png: None,
+                    };
+
+                    match plot_volatility_surface_in_memory(surface) {
+                        Ok(surface_png) => {
+                            let surface_path = output_dir_clone.join("volatility_surface.png");
+                            if let Err(e) = std::fs::write(&surface_path, &surface_png) {
+                                warn!("Failed to save vol surface to file: {}", e);
+                            }
+
+                            plot_data.surface_png = surface_png;
+                        }
+                        Err(e) => {
+                            warn!("Failed to generate vol surface plot: {}", e);
+                            continue;
+                        }
                     }
 
-                    // update smile for first expiration
                     if !surface.expirations.is_empty() {
                         let expiration = surface.expirations[0];
                         match surface.slice_by_expiration(expiration) {
                             Ok((strikes, vols)) => {
-                                let smile_path = output_dir_clone.join("volatility_smile.png");
-                                if let Err(e) = plot_volatility_smile(
+                                match plot_volatility_smile_in_memory(
                                     &strikes,
                                     &vols,
                                     &symbol_clone,
                                     &expiration,
-                                    &smile_path,
                                 ) {
-                                    warn!("Failed to plot smile: {}", e);
+                                    Ok(smile_png) => {
+                                        let smile_path =
+                                            output_dir_clone.join("volatility_smile.png");
+                                        if let Err(e) = std::fs::write(&smile_path, &smile_png) {
+                                            warn!("Failed to save vol smile to file: {}", e);
+                                        }
+
+                                        plot_data.smile_png = Some(smile_png);
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to generate vol smile plot: {}", e);
+                                    }
                                 }
                             }
                             Err(e) => {
                                 warn!("Failed to slice volatility surface: {}", e);
                             }
                         }
+                    }
+
+                    if let Err(e) = plot_sender_clone.try_send(plot_data) {
+                        warn!("Failed to send plot data to GUI: {}", e);
                     }
 
                     info!("Visualizations updated (version: {})", current_version);
@@ -346,12 +433,13 @@ async fn main() -> Result<()> {
     config.init_logging()?;
 
     let (ticker_sender, mut ticker_receiver) = mpsc::channel::<String>(10);
+    let (plot_sender, plot_receiver) = mpsc::channel::<PlotData>(10);
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
         let symbol = args[1].clone();
         info!("Ticker provided as command-line argument: {}", symbol);
-        run_volatility_surface_plot(&symbol).await?;
+        run_volatility_surface_plot(&symbol, plot_sender.clone()).await?;
         return Ok(());
     }
 
@@ -359,7 +447,7 @@ async fn main() -> Result<()> {
     let plotting_task = tokio::spawn(async move {
         while let Some(ticker) = ticker_receiver.recv().await {
             info!("Received ticker from GUI: {}", ticker);
-            if let Err(e) = run_volatility_surface_plot(&ticker).await {
+            if let Err(e) = run_volatility_surface_plot(&ticker, plot_sender.clone()).await {
                 warn!("Error plotting volatility surface for {}: {}", ticker, e);
             }
         }
@@ -369,10 +457,15 @@ async fn main() -> Result<()> {
         ticker_input: String::new(),
         status: "Enter a ticker symbol and click 'Plot Volatility Surface'".to_string(),
         ticker_sender,
+        plot_receiver,
+        plots: PlotImages {
+            surface: None,
+            smile: None,
+        },
     };
 
     let native_options = eframe::NativeOptions {
-        initial_window_size: Some(egui::vec2(400.0, 200.0)),
+        initial_window_size: Some(egui::vec2(1000.0, 700.0)),
         ..Default::default()
     };
 

@@ -1,7 +1,10 @@
 use crate::error::{OptionsError, Result};
 use crate::models::volatility::VolatilitySurface;
+use image::{ImageBuffer, Rgba};
 use ndarray::Array1;
+use plotters::backend::{BitMapBackend, PixelFormat};
 use plotters::prelude::*;
+use std::io::Cursor;
 use std::path::Path;
 
 pub fn plot_volatility_smile<P: AsRef<Path>>(
@@ -13,6 +16,18 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
 ) -> Result<()> {
     let output_path = output_path.as_ref();
 
+    let img_data = plot_volatility_smile_in_memory(strikes, volatilities, symbol, expiration)?;
+    std::fs::write(output_path, img_data)?;
+
+    Ok(())
+}
+
+pub fn plot_volatility_smile_in_memory(
+    strikes: &Array1<f64>,
+    volatilities: &Array1<f64>,
+    symbol: &str,
+    expiration: &chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<u8>> {
     let mut valid_points: Vec<(f64, f64)> = Vec::new();
     for (i, &vol) in volatilities.iter().enumerate() {
         if !vol.is_nan() {
@@ -52,58 +67,71 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
 
     let exp_str = expiration.format("%Y-%m-%d").to_string();
 
-    let root = BitMapBackend::new(output_path, (800, 600)).into_drawing_area();
-    root.fill(&WHITE)
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
+    let mut buffer = vec![0u8; 800 * 600 * 4]; // RGBA buffer
+    {
+        let root = BitMapBackend::with_buffer(&mut buffer, (800, 600)).into_drawing_area();
+        root.fill(&WHITE)
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
 
-    let mut chart = ChartBuilder::on(&root)
-        .caption(
-            format!("{} Volatility Smile - {}", symbol, exp_str),
-            ("sans-serif", 30).into_font(),
+        let mut chart = ChartBuilder::on(&root)
+            .caption(
+                format!("{} Volatility Smile - {}", symbol, exp_str),
+                ("sans-serif", 30).into_font(),
+            )
+            .margin(10)
+            .x_label_area_size(40)
+            .y_label_area_size(60)
+            .build_cartesian_2d(strike_min..strike_max, vol_min..vol_max)
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
+
+        chart
+            .configure_mesh()
+            .x_desc("Strike Price")
+            .y_desc("Implied Volatility")
+            .axis_desc_style(("sans-serif", 15))
+            .draw()
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
+
+        chart
+            .draw_series(LineSeries::new(
+                valid_points.iter().map(|&(s, v)| (s, v)),
+                &BLUE,
+            ))
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
+
+        chart
+            .draw_series(
+                valid_points
+                    .iter()
+                    .map(|&(s, v)| Circle::new((s, v), 3, BLUE.filled())),
+            )
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
+
+        root.draw_text(
+            &format!(
+                "Generated: {}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+            ),
+            &TextStyle::from(("sans-serif", 15)).color(&BLACK),
+            (10, 570),
         )
-        .margin(10)
-        .x_label_area_size(40)
-        .y_label_area_size(60)
-        .build_cartesian_2d(strike_min..strike_max, vol_min..vol_max)
         .map_err(|e| OptionsError::Other(e.to_string()))?;
 
-    chart
-        .configure_mesh()
-        .x_desc("Strike Price")
-        .y_desc("Implied Volatility")
-        .axis_desc_style(("sans-serif", 15))
-        .draw()
+        root.present()
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
+    }
+
+    // Convert the buffer to PNG format
+    let img_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(800, 600, buffer)
+        .ok_or_else(|| OptionsError::Other("Failed to create image buffer".to_string()))?;
+
+    let mut png_data = Vec::new();
+    let mut cursor = Cursor::new(&mut png_data);
+    img_buffer
+        .write_to(&mut cursor, image::ImageFormat::Png)
         .map_err(|e| OptionsError::Other(e.to_string()))?;
 
-    chart
-        .draw_series(LineSeries::new(
-            valid_points.iter().map(|&(s, v)| (s, v)),
-            &BLUE,
-        ))
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    chart
-        .draw_series(
-            valid_points
-                .iter()
-                .map(|&(s, v)| Circle::new((s, v), 3, BLUE.filled())),
-        )
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    root.draw_text(
-        &format!(
-            "Generated: {}",
-            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
-        ),
-        &TextStyle::from(("sans-serif", 15)).color(&BLACK),
-        (10, 570),
-    )
-    .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    root.present()
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    Ok(())
+    Ok(png_data)
 }
 
 pub fn plot_volatility_term_structure<P: AsRef<Path>>(
@@ -216,6 +244,13 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
 ) -> Result<()> {
     let output_path = output_path.as_ref();
 
+    let img_data = plot_volatility_surface_in_memory(surface)?;
+    std::fs::write(output_path, img_data)?;
+
+    Ok(())
+}
+
+pub fn plot_volatility_surface_in_memory(surface: &VolatilitySurface) -> Result<Vec<u8>> {
     let now = chrono::Utc::now();
     let times_to_expiration: Vec<f64> = surface
         .expirations
@@ -260,117 +295,131 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
     let vol_min = (min_vol - 0.1 * vol_range).max(0.0);
     let vol_max = max_vol + 0.1 * vol_range;
 
-    let root = BitMapBackend::new(output_path, (800, 600)).into_drawing_area();
-    root.fill(&WHITE)
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
+    // Create a buffer for the image data
+    let mut buffer = vec![0u8; 800 * 600 * 4]; // RGBA buffer
+    {
+        // Create a backend that writes to the buffer
+        let root = BitMapBackend::with_buffer(&mut buffer, (800, 600)).into_drawing_area();
+        root.fill(&WHITE)
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
 
-    let mut chart = ChartBuilder::on(&root)
-        .caption(
-            format!("{} Volatility Surface", surface.symbol),
-            ("sans-serif", 30).into_font(),
-        )
-        .margin(10)
-        .x_label_area_size(40)
-        .y_label_area_size(60)
-        .build_cartesian_2d(strike_min..strike_max, time_min..time_max)
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
+        let mut chart = ChartBuilder::on(&root)
+            .caption(
+                format!("{} Volatility Surface", surface.symbol),
+                ("sans-serif", 30).into_font(),
+            )
+            .margin(10)
+            .x_label_area_size(40)
+            .y_label_area_size(60)
+            .build_cartesian_2d(strike_min..strike_max, time_min..time_max)
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
 
-    chart
-        .configure_mesh()
-        .x_desc("Strike Price")
-        .y_desc("Time to Expiration (Years)")
-        .axis_desc_style(("sans-serif", 15))
-        .draw()
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
+        chart
+            .configure_mesh()
+            .x_desc("Strike Price")
+            .y_desc("Time to Expiration (Years)")
+            .axis_desc_style(("sans-serif", 15))
+            .draw()
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
 
-    let color_gradient = colorous::VIRIDIS;
+        let color_gradient = colorous::VIRIDIS;
 
-    for (i, &time) in times_to_expiration.iter().enumerate() {
-        for (j, &strike) in surface.strikes.iter().enumerate() {
-            let vol = surface.volatilities[[i, j]];
-            if !vol.is_nan() {
-                let normalized_vol = (vol - vol_min) / (vol_max - vol_min);
-                let color = color_gradient.eval_continuous(normalized_vol);
-                let rgb = RGBColor(color.r, color.g, color.b);
+        for (i, &time) in times_to_expiration.iter().enumerate() {
+            for (j, &strike) in surface.strikes.iter().enumerate() {
+                let vol = surface.volatilities[[i, j]];
+                if !vol.is_nan() {
+                    let normalized_vol = (vol - vol_min) / (vol_max - vol_min);
+                    let color = color_gradient.eval_continuous(normalized_vol);
+                    let rgb = RGBColor(color.r, color.g, color.b);
 
-                chart
-                    .draw_series(std::iter::once(Rectangle::new(
-                        [
-                            (
-                                strike - 0.5 * strike_range / surface.strikes.len() as f64,
-                                time - 0.5 * time_range / times_to_expiration.len() as f64,
-                            ),
-                            (
-                                strike + 0.5 * strike_range / surface.strikes.len() as f64,
-                                time + 0.5 * time_range / times_to_expiration.len() as f64,
-                            ),
-                        ],
-                        rgb.filled(),
-                    )))
-                    .map_err(|e| OptionsError::Other(e.to_string()))?;
+                    chart
+                        .draw_series(std::iter::once(Rectangle::new(
+                            [
+                                (
+                                    strike - 0.5 * strike_range / surface.strikes.len() as f64,
+                                    time - 0.5 * time_range / times_to_expiration.len() as f64,
+                                ),
+                                (
+                                    strike + 0.5 * strike_range / surface.strikes.len() as f64,
+                                    time + 0.5 * time_range / times_to_expiration.len() as f64,
+                                ),
+                            ],
+                            rgb.filled(),
+                        )))
+                        .map_err(|e| OptionsError::Other(e.to_string()))?;
+                }
             }
         }
-    }
 
-    let color_bar_width = 20;
-    let color_bar_height = 400;
-    let color_bar_x = 750;
-    let color_bar_y = 100;
+        let color_bar_width = 20;
+        let color_bar_height = 400;
+        let color_bar_x = 750;
+        let color_bar_y = 100;
 
-    for i in 0..color_bar_height {
-        let normalized_pos = 1.0 - (i as f64 / color_bar_height as f64);
-        let color = color_gradient.eval_continuous(normalized_pos);
-        let rgb = RGBColor(color.r, color.g, color.b);
+        for i in 0..color_bar_height {
+            let normalized_pos = 1.0 - (i as f64 / color_bar_height as f64);
+            let color = color_gradient.eval_continuous(normalized_pos);
+            let rgb = RGBColor(color.r, color.g, color.b);
 
-        root.draw(&Rectangle::new(
-            [
-                (color_bar_x, color_bar_y + i),
-                (color_bar_x + color_bar_width, color_bar_y + i + 1),
-            ],
-            rgb.filled(),
-        ))
-        .map_err(|e| OptionsError::Other(e.to_string()))?;
-    }
+            root.draw(&Rectangle::new(
+                [
+                    (color_bar_x, color_bar_y + i),
+                    (color_bar_x + color_bar_width, color_bar_y + i + 1),
+                ],
+                rgb.filled(),
+            ))
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
+        }
 
-    root.draw_text(
-        &format!("{:.2}", vol_max),
-        &TextStyle::from(("sans-serif", 12)).color(&BLACK),
-        (color_bar_x + color_bar_width + 5, color_bar_y),
-    )
-    .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    root.draw_text(
-        &format!("{:.2}", vol_min),
-        &TextStyle::from(("sans-serif", 12)).color(&BLACK),
-        (
-            color_bar_x + color_bar_width + 5,
-            color_bar_y + color_bar_height,
-        ),
-    )
-    .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    root.draw_text(
-        "IV",
-        &TextStyle::from(("sans-serif", 12)).color(&BLACK),
-        (
-            color_bar_x + color_bar_width + 5,
-            color_bar_y + color_bar_height / 2,
-        ),
-    )
-    .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    root.draw_text(
-        &format!(
-            "Generated: {}",
-            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
-        ),
-        &TextStyle::from(("sans-serif", 15)).color(&BLACK),
-        (10, 570),
-    )
-    .map_err(|e| OptionsError::Other(e.to_string()))?;
-
-    root.present()
+        root.draw_text(
+            &format!("{:.2}", vol_max),
+            &TextStyle::from(("sans-serif", 12)).color(&BLACK),
+            (color_bar_x + color_bar_width + 5, color_bar_y),
+        )
         .map_err(|e| OptionsError::Other(e.to_string()))?;
 
-    Ok(())
+        root.draw_text(
+            &format!("{:.2}", vol_min),
+            &TextStyle::from(("sans-serif", 12)).color(&BLACK),
+            (
+                color_bar_x + color_bar_width + 5,
+                color_bar_y + color_bar_height,
+            ),
+        )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
+
+        root.draw_text(
+            "IV",
+            &TextStyle::from(("sans-serif", 12)).color(&BLACK),
+            (
+                color_bar_x + color_bar_width + 5,
+                color_bar_y + color_bar_height / 2,
+            ),
+        )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
+
+        root.draw_text(
+            &format!(
+                "Generated: {}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+            ),
+            &TextStyle::from(("sans-serif", 15)).color(&BLACK),
+            (10, 570),
+        )
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
+
+        root.present()
+            .map_err(|e| OptionsError::Other(e.to_string()))?;
+    }
+
+    let img_buffer = ImageBuffer::<Rgba<u8>, _>::from_raw(800, 600, buffer)
+        .ok_or_else(|| OptionsError::Other("Failed to create image buffer".to_string()))?;
+
+    let mut png_data = Vec::new();
+    let mut cursor = Cursor::new(&mut png_data);
+    img_buffer
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .map_err(|e| OptionsError::Other(e.to_string()))?;
+
+    Ok(png_data)
 }

@@ -18,6 +18,118 @@ pub struct Asset {
     pub name: String,
 }
 
+// Define proper types for API responses
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionContract {
+    pub symbol: String,
+    pub id: String,
+    pub strike_price: f64,
+    pub expiration_date: String,
+    pub contract_type: String,
+    pub multiplier: i32,
+    pub underlying_symbol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionContractsResponse {
+    #[serde(default)]
+    pub results: Vec<OptionContract>,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionBar {
+    pub t: DateTime<Utc>,
+    pub o: f64,
+    pub h: f64,
+    pub l: f64,
+    pub c: f64,
+    pub v: u64,
+    pub n: Option<u32>,
+    pub vw: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionBarsResponse {
+    pub bars: std::collections::HashMap<String, Vec<OptionBar>>,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionTrade {
+    pub t: DateTime<Utc>,
+    pub price: f64,
+    pub size: u64,
+    pub conditions: Vec<String>,
+    pub exchange_code: String,
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionTradesResponse {
+    pub trades: Vec<OptionTrade>,
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionQuote {
+    pub t: DateTime<Utc>,
+    pub bid: f64,
+    pub ask: f64,
+    pub size_bid: u64,
+    pub size_ask: u64,
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionQuotesResponse {
+    pub quotes: std::collections::HashMap<String, OptionQuote>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionLastTrade {
+    pub t: DateTime<Utc>,
+    pub price: f64,
+    pub size: u64,
+    pub conditions: Vec<String>,
+    pub exchange_code: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionLastQuote {
+    pub t: DateTime<Utc>,
+    pub bid: f64,
+    pub ask: f64,
+    pub size_bid: u64,
+    pub size_ask: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionGreeks {
+    pub delta: f64,
+    pub gamma: f64,
+    pub theta: f64,
+    pub vega: f64,
+    pub rho: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionSnapshot {
+    pub symbol: String,
+    pub underlying_symbol: String,
+    pub strike_price: f64,
+    pub expiration_date: String,
+    pub contract_type: String,
+    pub last_trade: Option<OptionLastTrade>,
+    pub last_quote: Option<OptionLastQuote>,
+    pub greeks: Option<OptionGreeks>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptionSnapshotsResponse {
+    pub snapshots: std::collections::HashMap<String, OptionSnapshot>,
+}
+
 pub struct RestClient {
     client: reqwest::Client,
     config: AlpacaConfig,
@@ -69,12 +181,18 @@ impl RestClient {
         Ok(assets)
     }
 
-    /// get option contracts for an underlying symbol
+    /// Get option contracts for an underlying symbol
     pub async fn get_options_chain(
         &self,
         symbol: &str,
         expiration_date: Option<&str>,
-    ) -> Result<serde_json::Value> {
+        expiration_date_gte: Option<&str>,
+        expiration_date_lte: Option<&str>,
+        strike_price_gte: Option<f64>,
+        strike_price_lte: Option<f64>,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> Result<OptionContractsResponse> {
         info!("Getting option contracts for {}", symbol);
         let mut url = format!(
             "{}/v2/options/contracts?underlying_symbols={}",
@@ -82,7 +200,31 @@ impl RestClient {
         );
 
         if let Some(date) = expiration_date {
+            url.push_str(&format!("&expiration_date={}", date));
+        }
+
+        if let Some(date) = expiration_date_gte {
+            url.push_str(&format!("&expiration_date_gte={}", date));
+        }
+
+        if let Some(date) = expiration_date_lte {
             url.push_str(&format!("&expiration_date_lte={}", date));
+        }
+
+        if let Some(strike) = strike_price_gte {
+            url.push_str(&format!("&strike_price_gte={}", strike));
+        }
+
+        if let Some(strike) = strike_price_lte {
+            url.push_str(&format!("&strike_price_lte={}", strike));
+        }
+
+        if let Some(limit_val) = limit {
+            url.push_str(&format!("&limit={}", limit_val));
+        }
+
+        if let Some(offset_val) = offset {
+            url.push_str(&format!("&offset={}", offset_val));
         }
 
         let resp = self
@@ -91,32 +233,33 @@ impl RestClient {
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options chain: {}", e)))?;
 
-        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+        let data = resp.json::<OptionContractsResponse>().await.map_err(|e| {
             OptionsError::ParseError(format!("Failed to parse options chain: {}", e))
         })?;
 
         Ok(data)
     }
 
-    /// get historical options data
+    /// Get historical options bars data
     pub async fn get_options_bars(
         &self,
-        symbol: &str,
+        symbols: &[&str],
         start: DateTime<Utc>,
         end: DateTime<Utc>,
         timeframe: &str,
         limit: Option<u32>,
         page_token: Option<&str>,
         sort: Option<&str>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<OptionBarsResponse> {
         debug!(
-            "Getting options bars for {} from {} to {}",
-            symbol, start, end
+            "Getting options bars for symbols: {:?} from {} to {}",
+            symbols, start, end
         );
+        let symbols_str = symbols.join(",");
         let mut url = format!(
             "{}/v1beta1/options/bars?symbols={}&start={}&end={}&timeframe={}",
             self.config.data_url,
-            symbol,
+            symbols_str,
             start.to_rfc3339(),
             end.to_rfc3339(),
             timeframe
@@ -140,14 +283,14 @@ impl RestClient {
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options bars: {}", e)))?;
 
-        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+        let data = resp.json::<OptionBarsResponse>().await.map_err(|e| {
             OptionsError::ParseError(format!("Failed to parse options bars: {}", e))
         })?;
 
         Ok(data)
     }
 
-    /// get options trades
+    /// Get options trades
     pub async fn get_options_trades(
         &self,
         symbols: &[&str],
@@ -156,7 +299,7 @@ impl RestClient {
         limit: Option<u32>,
         page_token: Option<&str>,
         sort: Option<&str>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<OptionTradesResponse> {
         debug!("Getting options trades for symbols: {:?}", symbols);
         let symbols_str = symbols.join(",");
         let mut url = format!(
@@ -190,15 +333,15 @@ impl RestClient {
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options trades: {}", e)))?;
 
-        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+        let data = resp.json::<OptionTradesResponse>().await.map_err(|e| {
             OptionsError::ParseError(format!("Failed to parse options trades: {}", e))
         })?;
 
         Ok(data)
     }
 
-    /// get latest options quotes
-    pub async fn get_options_quotes(&self, symbols: &[&str]) -> Result<serde_json::Value> {
+    /// Get latest options quotes
+    pub async fn get_options_quotes(&self, symbols: &[&str]) -> Result<OptionQuotesResponse> {
         debug!("Getting latest options quotes for symbols: {:?}", symbols);
         let symbols_str = symbols.join(",");
         let url = format!(
@@ -212,14 +355,14 @@ impl RestClient {
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options quotes: {}", e)))?;
 
-        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+        let data = resp.json::<OptionQuotesResponse>().await.map_err(|e| {
             OptionsError::ParseError(format!("Failed to parse options quotes: {}", e))
         })?;
 
         Ok(data)
     }
 
-    /// get snapshots for a list of option symbols
+    /// Get snapshots for a list of option symbols
     pub async fn get_option_snapshots(
         &self,
         symbols: &[&str],
@@ -227,7 +370,7 @@ impl RestClient {
         updated_since: Option<DateTime<Utc>>,
         limit: Option<u32>,
         page_token: Option<&str>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<OptionSnapshotsResponse> {
         let symbols_str = symbols.join(",");
         let mut url = format!(
             "{}/v1beta1/options/snapshots?symbols={}",
@@ -255,14 +398,14 @@ impl RestClient {
                 OptionsError::Other(format!("Failed to get option snapshots: {}", e))
             })?;
 
-        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+        let data = resp.json::<OptionSnapshotsResponse>().await.map_err(|e| {
             OptionsError::ParseError(format!("Failed to parse option snapshots: {}", e))
         })?;
 
         Ok(data)
     }
 
-    /// get option chain snapshots for an underlying symbol
+    /// Get option chain snapshots for an underlying symbol
     #[allow(clippy::too_many_arguments)]
     pub async fn get_option_chain_snapshots(
         &self,
@@ -278,7 +421,7 @@ impl RestClient {
         expiration_date_gte: Option<&str>,
         expiration_date_lte: Option<&str>,
         root_symbol: Option<&str>,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<OptionSnapshotsResponse> {
         let mut url = format!(
             "{}/v1beta1/options/snapshots/{}",
             self.config.data_url, underlying_symbol
@@ -328,8 +471,71 @@ impl RestClient {
             OptionsError::Other(format!("Failed to get option chain snapshots: {}", e))
         })?;
 
-        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+        let data = resp.json::<OptionSnapshotsResponse>().await.map_err(|e| {
             OptionsError::ParseError(format!("Failed to parse option chain snapshots: {}", e))
+        })?;
+
+        Ok(data)
+    }
+
+    /// Get condition codes for options
+    pub async fn get_options_condition_codes(&self, tick_type: &str) -> Result<serde_json::Value> {
+        debug!(
+            "Getting options condition codes for tick type: {}",
+            tick_type
+        );
+        let url = format!(
+            "{}/v1beta1/options/meta/conditions/{}",
+            self.config.data_url, tick_type
+        );
+
+        let resp =
+            self.auth(self.client.get(&url)).send().await.map_err(|e| {
+                OptionsError::Other(format!("Failed to get condition codes: {}", e))
+            })?;
+
+        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse condition codes: {}", e))
+        })?;
+
+        Ok(data)
+    }
+
+    /// Get exchange codes for options
+    pub async fn get_options_exchange_codes(&self) -> Result<serde_json::Value> {
+        debug!("Getting options exchange codes");
+        let url = format!("{}/v1beta1/options/meta/exchanges", self.config.data_url);
+
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| OptionsError::Other(format!("Failed to get exchange codes: {}", e)))?;
+
+        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse exchange codes: {}", e))
+        })?;
+
+        Ok(data)
+    }
+
+    /// Get latest option trades
+    pub async fn get_latest_options_trades(&self, symbols: &[&str]) -> Result<serde_json::Value> {
+        debug!("Getting latest option trades for symbols: {:?}", symbols);
+        let symbols_str = symbols.join(",");
+        let url = format!(
+            "{}/v1beta1/options/trades/latest?symbols={}",
+            self.config.data_url, symbols_str
+        );
+
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| OptionsError::Other(format!("Failed to get latest trades: {}", e)))?;
+
+        let data = resp.json::<serde_json::Value>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse latest trades: {}", e))
         })?;
 
         Ok(data)

@@ -28,3 +28,4 @@ url = "2.3"
 eframe = "0.22.0"  # egui framework
 egui = "0.22.0"    # GUI library
 rayon = "1.7"      # Parallel computing
+image = "0.25.6"
