@@ -4,11 +4,11 @@
 //! and volatility surface calculations.
 
 use crate::error::{OptionsError, Result};
-use crate::models::option::{OptionContract, OptionQuote, OptionType};
-use black_scholes::{delta, implied_volatility, vega};
+use crate::models::option::{OptionContract, OptionQuote};
+use crate::utils::{delta, implied_volatility, vega};
 use ndarray::{Array1, Array2};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeSet;
 
 /// Implied volatility calculation result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,23 +126,17 @@ impl VolatilitySurface {
         }
         
         // Extract unique expirations and strikes
-        let mut expiration_map = HashMap::new();
-        let mut strike_map = HashMap::new();
+        let mut expirations_set = BTreeSet::new();
+        let mut strikes_set = BTreeSet::new();
         
         for iv in implied_volatilities {
-            let expiration = iv.contract.expiration;
-            let strike = iv.contract.strike;
-            
-            expiration_map.insert(expiration, ());
-            strike_map.insert(strike, ());
+            expirations_set.insert(iv.contract.expiration);
+            strikes_set.insert(iv.contract.strike);
         }
-        
+
         // Sort expirations and strikes
-        let mut expirations: Vec<_> = expiration_map.keys().cloned().collect();
-        let mut strikes: Vec<_> = strike_map.keys().cloned().collect();
-        
-        expirations.sort();
-        strikes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let expirations: Vec<_> = expirations_set.into_iter().collect();
+        let strikes: Vec<_> = strikes_set.into_iter().collect();
         
         // Create a 2D array for volatilities
         let n_expirations = expirations.len();
