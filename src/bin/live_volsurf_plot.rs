@@ -4,7 +4,7 @@ use options_rs::api::{RestClient, WebSocketClient};
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
 use options_rs::models::volatility::{ImpliedVolatility, VolatilitySurface};
-use options_rs::models::OptionContract;
+use options_rs::models::{OptionContract, OptionQuote};
 use options_rs::utils::{
     plot_volatility_smile, plot_volatility_smile_in_memory, plot_volatility_surface,
     plot_volatility_surface_in_memory,
@@ -162,7 +162,7 @@ async fn run_volatility_surface_plot(
         symbol
     );
 
-    let rest_client = RestClient::new(config.alpaca.clone());
+    let rest_client = Arc::new(RestClient::new(config.alpaca.clone()));
     let ws_client = WebSocketClient::new(config.alpaca.clone());
 
     info!("Fetching initial options chain for {}", symbol);
@@ -200,7 +200,7 @@ async fn run_volatility_surface_plot(
         "Connecting to WebSocket for {} option symbols",
         option_symbols.len()
     );
-    ws_client.connect(option_symbols).await?;
+    ws_client.connect(option_symbols.clone()).await?;
 
     let quotes_clone = latest_quotes.clone();
     let quote_task = tokio::spawn(async move {
@@ -242,6 +242,8 @@ async fn run_volatility_surface_plot(
     let surface_clone = surface.clone();
     let update_interval = Duration::from_secs(5);
     let symbol_clone = symbol.to_string();
+    let rest_client_clone = Arc::clone(&rest_client);
+    let option_symbols_clone = option_symbols.clone();
 
     let surface_task = tokio::spawn(async move {
         info!("Starting surface update task");
@@ -249,13 +251,68 @@ async fn run_volatility_surface_plot(
             sleep(update_interval).await;
 
             let quotes = quotes_clone.read().await;
-            if quotes.is_empty() {
-                info!("No quotes available yet, waiting for data...");
-                continue;
-            }
+            let quotes_vec: Vec<_>;
 
-            let quotes_vec: Vec<_> = quotes.values().cloned().collect();
-            drop(quotes); 
+            if quotes.is_empty() {
+                info!("No live quotes available, fetching recent quotes from REST API...");
+                drop(quotes);
+
+                // Convert Vec<String> to Vec<&str> for the API call
+                let option_symbols_str: Vec<&str> = option_symbols_clone.iter().map(AsRef::as_ref).collect();
+
+                // Fetch latest quotes using the REST API
+                match rest_client_clone.get_options_quotes(&option_symbols_str).await {
+                    Ok(response) => {
+                        let quotes_response = response.quotes;
+                        if quotes_response.is_empty() {
+                            info!("No option quotes available, waiting for data...");
+                            continue;
+                        }
+
+                        info!("Fetched {} option quotes", quotes_response.len());
+
+                        // Convert API quotes to OptionQuote objects
+                        quotes_vec = quotes_response.iter()
+                            .filter_map(|(symbol, quote)| {
+                                if let Some(contract) = OptionContract::from_occ_symbol(symbol) {
+                                    // Estimate underlying price (not ideal but workable)
+                                    // In a real implementation, you might want to fetch the underlying price separately
+                                    let underlying_price = if contract.is_call() {
+                                        contract.strike + quote.ask - quote.bid
+                                    } else {
+                                        contract.strike - quote.ask + quote.bid
+                                    };
+
+                                    Some(OptionQuote {
+                                        contract,
+                                        bid: quote.bid,
+                                        ask: quote.ask,
+                                        last: (quote.bid + quote.ask) / 2.0, // Use mid as last
+                                        volume: quote.size_bid + quote.size_ask,
+                                        open_interest: 0, // Not available in quotes
+                                        underlying_price,
+                                        timestamp: quote.t,
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        if quotes_vec.is_empty() {
+                            info!("No valid option quotes could be created, waiting for data...");
+                            continue;
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to fetch option quotes: {}", e);
+                        continue;
+                    }
+                }
+            } else {
+                quotes_vec = quotes.values().cloned().collect();
+                drop(quotes);
+            }
 
             let ivs_result = tokio::task::spawn_blocking(move || {
                 use rayon::prelude::*;

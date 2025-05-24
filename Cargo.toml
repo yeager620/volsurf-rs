@@ -3,7 +3,7 @@ name = "options-rs"
 version = "0.1.0"
 edition = "2021"
 description = "Low-latency Alpaca Markets API client for options pricing and volatility surface calculations"
-authors = ["Options Team"]
+authors = ["Evan Yeager"]
 
 [dependencies]
 
@@ -13,7 +13,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenv = "0.15"
 config = "0.13"
 thiserror = "1.0"
-anyhow = "1.0"
 ndarray = { version = "0.15", features = ["serde"] }
 statrs = "0.16"  # Statistical computations
 serde = { version = "1.0", features = ["derive"] }
