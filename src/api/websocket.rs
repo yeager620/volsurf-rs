@@ -6,7 +6,6 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::{self, Duration};
 use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,17 +124,25 @@ pub struct WebSocketClient {
     config: AlpacaConfig,                        // Configuration for the Alpaca API
     data_sender: mpsc::Sender<ModelOptionQuote>, // Channel for sending market data
     data_receiver: Arc<Mutex<mpsc::Receiver<ModelOptionQuote>>>, // Channel for receiving market data
+    notification_tx: Arc<tokio::sync::broadcast::Sender<()>>, // Broadcast channel for notifying about new data
 }
 
 impl WebSocketClient {
     pub fn new(config: AlpacaConfig) -> Self {
         let (data_sender, data_receiver) = mpsc::channel(1000);
+        let (notification_tx, _) = tokio::sync::broadcast::channel(100); // Broadcast notification channel
 
         Self {
             config,
             data_sender,
             data_receiver: Arc::new(Mutex::new(data_receiver)),
+            notification_tx: Arc::new(notification_tx),
         }
+    }
+
+    /// Get a notification channel that will be signaled when new data is available
+    pub fn get_notification_channel(&self) -> tokio::sync::broadcast::Receiver<()> {
+        self.notification_tx.subscribe()
     }
 
     pub async fn connect(&self, symbols: Vec<String>) -> Result<()> {
@@ -161,6 +168,7 @@ impl WebSocketClient {
         let api_key = self.config.api_key.clone();
         let api_secret = self.config.api_secret.clone();
         let symbols_clone = symbols.clone();
+        let notification_tx = self.notification_tx.clone();
 
         tokio::spawn(async move {
             info!(
@@ -230,11 +238,20 @@ impl WebSocketClient {
                                     );
 
                                     match sender.try_send(model_quote) {
-                                        Ok(_) => {}
+                                        Ok(_) => {
+                                            // Notify listeners about new data
+                                            if let Err(e) = notification_tx.send(()) {
+                                                debug!("Failed to send notification: {}", e);
+                                            }
+                                        }
                                         Err(mpsc::error::TrySendError::Full(model_quote)) => {
                                             if sender.send(model_quote).await.is_err() {
                                                 warn!("Failed to send quote to channel");
                                                 break;
+                                            }
+                                            // Notify listeners about new data
+                                            if let Err(e) = notification_tx.send(()) {
+                                                debug!("Failed to send notification: {}", e);
                                             }
                                         }
                                         Err(_) => {
@@ -305,6 +322,33 @@ impl WebSocketClient {
             Some(quote) => Ok(Some(quote)),
             None => Ok(None),
         }
+    }
+
+    /// Get multiple quotes at once, up to the specified batch size
+    /// This is more efficient than calling next_option_quote() multiple times
+    pub async fn next_option_quotes_batch(
+        &self,
+        max_batch_size: usize,
+    ) -> Result<Vec<ModelOptionQuote>> {
+        let mut receiver = self.data_receiver.lock().await;
+        let mut quotes = Vec::with_capacity(max_batch_size);
+
+        // Get the first quote (waiting if necessary)
+        if let Some(quote) = receiver.recv().await {
+            quotes.push(quote);
+        } else {
+            return Ok(quotes); // Channel closed, return empty vec
+        }
+
+        // Try to get more quotes without waiting (up to max_batch_size)
+        while quotes.len() < max_batch_size {
+            match receiver.try_recv() {
+                Ok(quote) => quotes.push(quote),
+                Err(_) => break, // No more quotes available right now
+            }
+        }
+
+        Ok(quotes)
     }
 
     pub async fn process_option_quotes<F>(&self, mut callback: F) -> Result<()>

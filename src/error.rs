@@ -1,6 +1,5 @@
 use thiserror::Error;
 
-/// Custom error types for the options-rs library
 #[derive(Error, Debug)]
 pub enum OptionsError {
     #[error("Parse error: {0}")]
