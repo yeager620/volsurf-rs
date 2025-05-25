@@ -178,7 +178,9 @@ pub fn implied_volatility(
     let moneyness = s / k;
 
     // Check for special cases first
-    if let Some(special_sigma) = handle_special_cases(time_value, moneyness, adjusted_price, is_call) {
+    if let Some(special_sigma) =
+        handle_special_cases(time_value, moneyness, adjusted_price, is_call)
+    {
         return Ok(special_sigma);
     }
 
@@ -197,9 +199,17 @@ pub fn implied_volatility(
 
         // Simplified tolerance logic
         let tolerance = if is_call {
-            if i < 50 { 1e-3 } else { 1e-2 }
+            if i < 50 {
+                1e-3
+            } else {
+                1e-2
+            }
         } else {
-            if i < 20 { 1e-4 } else { 1e-3 }
+            if i < 20 {
+                1e-4
+            } else {
+                1e-3
+            }
         };
 
         if diff.abs() < tolerance {
@@ -225,9 +235,21 @@ pub fn implied_volatility(
         // Newton-Raphson step with damping factor
         let step = diff / v;
         let damping = if is_call {
-            if i < 20 { 0.3 } else if i < 50 { 0.5 } else { 0.7 }
+            if i < 20 {
+                0.3
+            } else if i < 50 {
+                0.5
+            } else {
+                0.7
+            }
         } else {
-            if i < 10 { 0.5 } else if i < 30 { 0.7 } else { 0.9 }
+            if i < 10 {
+                0.5
+            } else if i < 30 {
+                0.7
+            } else {
+                0.9
+            }
         };
         sigma -= step * damping;
 

@@ -196,7 +196,7 @@ async fn run_volatility_surface_plot(
         .get_option_chain_snapshots(
             symbol,
             Some("indicative"), // Use indicative feed as mentioned in the docs
-            Some(100),          // Limit to 100 snapshots
+            Some(1),          // Limit to n snapshots
             None,               // updated_since
             None,               // page_token
             None,               // option_type
@@ -215,8 +215,14 @@ async fn run_volatility_surface_plot(
     if snapshot_count == 0 {
         warn!("No option snapshots found for {} using get_option_chain_snapshots API with feed=indicative.", symbol);
         warn!("This could be because:");
-        warn!("1. The symbol {} does not have any options available", symbol);
-        warn!("2. The symbol {} is not valid or not supported by Alpaca", symbol);
+        warn!(
+            "1. The symbol {} does not have any options available",
+            symbol
+        );
+        warn!(
+            "2. The symbol {} is not valid or not supported by Alpaca",
+            symbol
+        );
         warn!("3. There might be an issue with your Alpaca API credentials or subscription");
         warn!("4. The Alpaca API might be experiencing issues");
         warn!("Please check the symbol and try again, or try a different symbol.");

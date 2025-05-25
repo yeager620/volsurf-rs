@@ -70,11 +70,41 @@ impl OptionContract {
         // This is a direct approach to extract the underlying symbol, expiration, type, and strike
 
         // Find the position of 'C' or 'P' to determine option type
-        let type_pos = match occ_symbol.find(|c| c == 'C' || c == 'P') {
+        // We need to be careful as the underlying symbol might contain 'C' or 'P'
+        // The option type character should be after the date part, which is 6 digits
+        // First, try to find all positions of 'C' or 'P'
+        let mut type_positions = Vec::new();
+        for (i, c) in occ_symbol.char_indices() {
+            if c == 'C' || c == 'P' {
+                type_positions.push(i);
+            }
+        }
+
+        if type_positions.is_empty() {
+            warn!("Failed to find 'C' or 'P' in OCC symbol: {}", occ_symbol);
+            return None;
+        }
+
+        // For each position, check if it's preceded by 6 digits (the date part)
+        let mut valid_type_pos = None;
+        for &pos in &type_positions {
+            if pos >= 6 {
+                let date_part = &occ_symbol[(pos - 6)..pos];
+                if date_part.chars().all(|c| c.is_digit(10)) {
+                    valid_type_pos = Some(pos);
+                    break;
+                }
+            }
+        }
+
+        let type_pos = match valid_type_pos {
             Some(pos) => pos,
             None => {
-                warn!("Failed to find 'C' or 'P' in OCC symbol: {}", occ_symbol);
-                return None;
+                // If no valid position is found, use the last position as a fallback
+                // This is more likely to be correct than the first position
+                let pos = *type_positions.last().unwrap();
+                warn!("No valid option type position found with date check, using last position {} as fallback for: {}", pos, occ_symbol);
+                pos
             }
         };
 

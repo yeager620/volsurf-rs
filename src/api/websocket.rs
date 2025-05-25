@@ -161,7 +161,9 @@ impl WebSocketClient {
         // Derive WebSocket URL from data_url in configuration
         let data_url = &self.config.data_url;
         let ws_domain = if data_url.starts_with("https://") {
-            data_url.strip_prefix("https://").unwrap_or("data.alpaca.markets")
+            data_url
+                .strip_prefix("https://")
+                .unwrap_or("data.alpaca.markets")
         } else {
             "data.alpaca.markets"
         };
@@ -180,10 +182,14 @@ impl WebSocketClient {
         let notification_tx = self.notification_tx.clone();
 
         // Helper function to extract status code from websocket error
-        fn get_status_from_error(err: &tokio_tungstenite::tungstenite::Error) -> Option<reqwest::StatusCode> {
+        fn get_status_from_error(
+            err: &tokio_tungstenite::tungstenite::Error,
+        ) -> Option<reqwest::StatusCode> {
             use tokio_tungstenite::tungstenite::Error;
             match err {
-                Error::Http(response) => Some(reqwest::StatusCode::from_u16(response.status().as_u16()).ok()?),
+                Error::Http(response) => {
+                    Some(reqwest::StatusCode::from_u16(response.status().as_u16()).ok()?)
+                }
                 _ => None,
             }
         }
@@ -202,7 +208,11 @@ impl WebSocketClient {
 
                     // Check if it's an HTTP error and provide more details
                     if let Some(status) = get_status_from_error(&e) {
-                        warn!("HTTP error: {} {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown"));
+                        warn!(
+                            "HTTP error: {} {}",
+                            status.as_u16(),
+                            status.canonical_reason().unwrap_or("Unknown")
+                        );
 
                         if status == reqwest::StatusCode::NOT_FOUND {
                             warn!("The WebSocket endpoint was not found (404). This could be because:");

@@ -88,8 +88,9 @@ impl VolatilitySurfaceVisualizer {
         let mut u8_buffer = vec![0u8; self.width * self.height * 4];
 
         {
-            let root = BitMapBackend::with_buffer(&mut u8_buffer, (self.width as u32, self.height as u32))
-                .into_drawing_area();
+            let root =
+                BitMapBackend::with_buffer(&mut u8_buffer, (self.width as u32, self.height as u32))
+                    .into_drawing_area();
 
             root.fill(&BLACK)?;
 
@@ -118,11 +119,16 @@ impl VolatilitySurfaceVisualizer {
 
         // Convert the u8 buffer to u32 buffer for minifb
         for i in 0..self.width * self.height {
+            // Plotters writes into u8_buffer as [R, G, B, A]
             let r = u8_buffer[i * 4] as u32;
             let g = u8_buffer[i * 4 + 1] as u32;
             let b = u8_buffer[i * 4 + 2] as u32;
-            let a = u8_buffer[i * 4 + 3] as u32;
-            self.buffer[i] = (a << 24) | (r << 16) | (g << 8) | b;
+            // Force fully opaque alpha
+            let a = 0xff;
+
+            // MiniFB on macOS expects ARGB in memory as [B, G, R, A] little-endian,
+            // so pack as BGRA:
+            self.buffer[i] = (a << 24) | (b << 16) | (g << 8) | r;
         }
 
         Ok(())
@@ -204,11 +210,16 @@ impl VolatilitySurfaceVisualizer {
         }
 
         for i in 0..self.width * self.height {
+            // Plotters writes into u8_buffer as [R, G, B, A]
             let r = u8_buffer[i * 4] as u32;
             let g = u8_buffer[i * 4 + 1] as u32;
             let b = u8_buffer[i * 4 + 2] as u32;
-            let a = u8_buffer[i * 4 + 3] as u32;
-            self.buffer[i] = (a << 24) | (r << 16) | (g << 8) | b;
+            // Force fully opaque alpha
+            let a = 0xff;
+
+            // MiniFB on macOS expects ARGB in memory as [B, G, R, A] little-endian,
+            // so pack as BGRA:
+            self.buffer[i] = (a << 24) | (b << 16) | (g << 8) | r;
         }
 
         Ok(())
@@ -285,8 +296,10 @@ pub async fn stream_quotes(symbol: String, cfg: AlpacaConfig) -> Result<()> {
             None,               // expiration_date_gte
             None,               // expiration_date_lte
             None,               // root_symbol
-        )
-    ).await {
+        ),
+    )
+    .await
+    {
         Ok(result) => match result {
             Ok(snapshots) => snapshots,
             Err(e) => {
@@ -310,7 +323,9 @@ pub async fn stream_quotes(symbol: String, cfg: AlpacaConfig) -> Result<()> {
                 sigma: vec![0.0; 3], // Just placeholder data
             };
             let _ = SURFACE_BUS.send(update);
-            return Err(OptionsError::Other("Timeout fetching option contracts".to_string()));
+            return Err(OptionsError::Other(
+                "Timeout fetching option contracts".to_string(),
+            ));
         }
     };
 
@@ -318,8 +333,14 @@ pub async fn stream_quotes(symbol: String, cfg: AlpacaConfig) -> Result<()> {
     if option_symbols.is_empty() {
         warn!("No option symbols found for {}", symbol);
         warn!("This could be because:");
-        warn!("1. The symbol {} does not have any options available", symbol);
-        warn!("2. The symbol {} is not valid or not supported by Alpaca", symbol);
+        warn!(
+            "1. The symbol {} does not have any options available",
+            symbol
+        );
+        warn!(
+            "2. The symbol {} is not valid or not supported by Alpaca",
+            symbol
+        );
         warn!("3. There might be an issue with your Alpaca API credentials or subscription");
         warn!("4. The Alpaca API might be experiencing issues");
 
@@ -331,10 +352,17 @@ pub async fn stream_quotes(symbol: String, cfg: AlpacaConfig) -> Result<()> {
         };
         let _ = SURFACE_BUS.send(update);
 
-        return Err(OptionsError::Other(format!("No option symbols found for {}", symbol)));
+        return Err(OptionsError::Other(format!(
+            "No option symbols found for {}",
+            symbol
+        )));
     }
 
-    info!("Processing {} option snapshots for {}", option_symbols.len(), symbol);
+    info!(
+        "Processing {} option snapshots for {}",
+        option_symbols.len(),
+        symbol
+    );
     let mut builder = SurfaceBuilder::new();
     let mut processed_count = 0;
     let mut parse_failures = 0;
@@ -427,7 +455,7 @@ pub async fn stream_quotes(symbol: String, cfg: AlpacaConfig) -> Result<()> {
                     bid,
                     ask,
                     last: last_price,
-                    volume: 0, // Not critical for IV calculation
+                    volume: 0,        // Not critical for IV calculation
                     open_interest: 0, // Not available in snapshots
                     underlying_price,
                     timestamp,
@@ -447,13 +475,23 @@ pub async fn stream_quotes(symbol: String, cfg: AlpacaConfig) -> Result<()> {
         }
     }
 
-    info!("Processed {}/{} option snapshots", processed_count, option_symbols.len());
+    info!(
+        "Processed {}/{} option snapshots",
+        processed_count,
+        option_symbols.len()
+    );
     info!("OCC symbol parse failures: {}", parse_failures);
     info!("Missing quote/trade data: {}", missing_data_count);
 
     if processed_count == 0 {
-        warn!("No valid option quotes could be created from snapshots for {}.", symbol);
-        return Err(OptionsError::Other(format!("No valid option quotes for {}", symbol)));
+        warn!(
+            "No valid option quotes could be created from snapshots for {}.",
+            symbol
+        );
+        return Err(OptionsError::Other(format!(
+            "No valid option quotes for {}",
+            symbol
+        )));
     }
 
     // Send a final surface update
