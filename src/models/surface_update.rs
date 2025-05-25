@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
 use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
 
 /// Sent on every surface refresh.
 #[derive(Serialize, Deserialize, Clone, Debug)]

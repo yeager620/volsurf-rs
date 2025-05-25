@@ -1,7 +1,7 @@
 mod option;
-pub mod volatility;
 pub mod surface_update;
+pub mod volatility;
 
 pub use option::*;
-pub use volatility::*;
 pub use surface_update::SurfaceUpdate;
+pub use volatility::*;

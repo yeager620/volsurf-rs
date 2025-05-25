@@ -252,8 +252,10 @@ impl RestClient {
             url.push_str(&format!("&offset={}", offset_val));
         }
 
+        // Add a timeout to prevent hanging indefinitely
         let resp = self
             .auth(self.client.get(&url))
+            .timeout(std::time::Duration::from_secs(30)) // 30 second timeout
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options chain: {}", e)))?;

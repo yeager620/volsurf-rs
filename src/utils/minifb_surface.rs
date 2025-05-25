@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use chrono::NaiveDate;
 use once_cell::sync::Lazy;
 use tokio::sync::broadcast;
+use tracing::{info, warn};
 
 use crate::api::{RestClient, WebSocketClient};
 use crate::config::AlpacaConfig;
@@ -13,7 +14,6 @@ use crate::models::{ImpliedVolatility, OptionQuote, SurfaceUpdate};
 use minifb::{Key, Window, WindowOptions};
 use plotters::prelude::*;
 
-use ndarray;
 /// Global broadcast channel for surface updates
 pub static SURFACE_BUS: Lazy<broadcast::Sender<SurfaceUpdate>> = Lazy::new(|| {
     let (tx, _rx) = broadcast::channel(32);
@@ -28,6 +28,7 @@ pub struct VolatilitySurfaceVisualizer {
     height: usize,
     rx: broadcast::Receiver<SurfaceUpdate>,
     latest: Option<SurfaceUpdate>,
+    last_update_time: std::time::Instant,
 }
 
 impl VolatilitySurfaceVisualizer {
@@ -38,14 +39,25 @@ impl VolatilitySurfaceVisualizer {
             width,
             height,
             WindowOptions::default(),
-        ).map_err(|e| OptionsError::Other(format!("Window error: {}", e)))?;
+        )
+        .map_err(|e| OptionsError::Other(format!("Window error: {}", e)))?;
         window.limit_update_rate(Some(Duration::from_micros(1_000_000 / 60)));
         let buffer = vec![0u32; width * height];
         let rx = SURFACE_BUS.subscribe();
-        Ok(Self { window, buffer, width, height, rx, latest: None })
+        Ok(Self {
+            window,
+            buffer,
+            width,
+            height,
+            rx,
+            latest: None,
+            last_update_time: Instant::now(),
+        })
     }
 
     pub fn run(&mut self, _cfg: AlpacaConfig) -> Result<()> {
+        let start_time = Instant::now();
+
         while self.window.is_open() && !self.window.is_key_down(Key::Escape) {
             while let Ok(update) = self.rx.try_recv() {
                 self.latest = Some(update);
@@ -53,11 +65,66 @@ impl VolatilitySurfaceVisualizer {
 
             if let Some(update) = self.latest.clone() {
                 self.draw_heatmap(&update)?;
+            } else {
+                // If no data is available yet, draw a loading message
+                self.draw_loading_message(start_time.elapsed().as_secs())?;
             }
+
             self.window
                 .update_with_buffer(&self.buffer, self.width, self.height)
                 .map_err(|e| OptionsError::Other(format!("Window update: {}", e)))?;
         }
+        Ok(())
+    }
+
+    fn draw_loading_message(&mut self, elapsed_secs: u64) -> Result<()> {
+        use plotters::style::TextStyle;
+
+        // Clear buffer with black
+        for pixel in self.buffer.iter_mut() {
+            *pixel = 0;
+        }
+
+        let mut u8_buffer = vec![0u8; self.width * self.height * 4];
+
+        {
+            let root = BitMapBackend::with_buffer(&mut u8_buffer, (self.width as u32, self.height as u32))
+                .into_drawing_area();
+
+            root.fill(&BLACK)?;
+
+            // Draw loading message
+            let loading_text = format!("Loading data... ({} seconds)", elapsed_secs);
+            let style = TextStyle::from(("sans-serif", 30).into_font()).color(&WHITE);
+
+            root.draw_text(
+                &loading_text,
+                &style,
+                (self.width as i32 / 2, self.height as i32 / 2),
+            )?;
+
+            // Add a hint about data loading
+            let hint_text = "Fetching option contracts and establishing WebSocket connection...";
+            let hint_style = TextStyle::from(("sans-serif", 20).into_font()).color(&WHITE);
+
+            root.draw_text(
+                hint_text,
+                &hint_style,
+                (self.width as i32 / 2, self.height as i32 / 2 + 40),
+            )?;
+
+            root.present()?;
+        }
+
+        // Convert the u8 buffer to u32 buffer for minifb
+        for i in 0..self.width * self.height {
+            let r = u8_buffer[i * 4] as u32;
+            let g = u8_buffer[i * 4 + 1] as u32;
+            let b = u8_buffer[i * 4 + 2] as u32;
+            let a = u8_buffer[i * 4 + 3] as u32;
+            self.buffer[i] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+
         Ok(())
     }
 
@@ -71,69 +138,67 @@ impl VolatilitySurfaceVisualizer {
         }
 
         {
-            let root = BitMapBackend::with_buffer(
-                &mut u8_buffer,
-                (self.width as u32, self.height as u32),
-            )
-            .into_drawing_area();
+            let root =
+                BitMapBackend::with_buffer(&mut u8_buffer, (self.width as u32, self.height as u32))
+                    .into_drawing_area();
 
             root.fill(&BLACK)?;
 
-        let strike_step = if surf.strikes.len() > 1 {
-            surf.strikes[1] - surf.strikes[0]
-        } else {
-            1.0
-        };
+            let strike_step = if surf.strikes.len() > 1 {
+                surf.strikes[1] - surf.strikes[0]
+            } else {
+                1.0
+            };
 
-        let min_vol = surf
-            .sigma
-            .iter()
-            .cloned()
-            .filter(|v| v.is_finite())
-            .fold(f64::INFINITY, f64::min);
-        let max_vol = surf
-            .sigma
-            .iter()
-            .cloned()
-            .filter(|v| v.is_finite())
-            .fold(f64::NEG_INFINITY, f64::max);
+            let min_vol = surf
+                .sigma
+                .iter()
+                .cloned()
+                .filter(|v| v.is_finite())
+                .fold(f64::INFINITY, f64::min);
+            let max_vol = surf
+                .sigma
+                .iter()
+                .cloned()
+                .filter(|v| v.is_finite())
+                .fold(f64::NEG_INFINITY, f64::max);
 
-        let mut chart = ChartBuilder::on(&root)
-            .margin(10)
-            .x_label_area_size(40)
-            .y_label_area_size(40)
-            .build_cartesian_2d(
-                *surf.strikes.first().unwrap()..*surf.strikes.last().unwrap(),
-                0f64..surf.expiries.len() as f64,
-            )?;
+            let mut chart = ChartBuilder::on(&root)
+                .margin(10)
+                .x_label_area_size(40)
+                .y_label_area_size(40)
+                .build_cartesian_2d(
+                    *surf.strikes.first().unwrap()..*surf.strikes.last().unwrap(),
+                    0f64..surf.expiries.len() as f64,
+                )?;
 
-        chart.configure_mesh().disable_mesh().draw()?;
+            chart.configure_mesh().disable_mesh().draw()?;
 
-        for (row, _exp) in surf.expiries.iter().enumerate() {
-            for (col, &strike) in surf.strikes.iter().enumerate() {
-                let sigma = surf.sigma[row * surf.strikes.len() + col];
-                if !sigma.is_finite() {
-                    continue;
+            for (row, _exp) in surf.expiries.iter().enumerate() {
+                for (col, &strike) in surf.strikes.iter().enumerate() {
+                    let sigma = surf.sigma[row * surf.strikes.len() + col];
+                    if !sigma.is_finite() {
+                        continue;
+                    }
+
+                    let norm = if max_vol > min_vol {
+                        (sigma - min_vol) / (max_vol - min_vol)
+                    } else {
+                        0.0
+                    };
+                    let idx = (norm.clamp(0.0, 1.0) * (Palette99::COLORS.len() - 1) as f64).round()
+                        as usize;
+                    let color = Palette99::pick(idx);
+                    let rect = Rectangle::new(
+                        [
+                            (strike - 0.5 * strike_step, row as f64),
+                            (strike + 0.5 * strike_step, row as f64 + 1.0),
+                        ],
+                        color.filled(),
+                    );
+                    chart.draw_series(std::iter::once(rect))?;
                 }
-
-                let norm = if max_vol > min_vol {
-                    (sigma - min_vol) / (max_vol - min_vol)
-                } else {
-                    0.0
-                };
-                let idx = (norm.clamp(0.0, 1.0) * (Palette99::COLORS.len() - 1) as f64)
-                    .round() as usize;
-                let color = Palette99::pick(idx);
-                let rect = Rectangle::new(
-                    [
-                        (strike - 0.5 * strike_step, row as f64),
-                        (strike + 0.5 * strike_step, row as f64 + 1.0),
-                    ],
-                    color.filled(),
-                );
-                chart.draw_series(std::iter::once(rect))?;
             }
-        }
 
             root.present()?;
         }
@@ -158,7 +223,10 @@ struct SurfaceBuilder {
 
 impl SurfaceBuilder {
     fn new() -> Self {
-        Self { grid: HashMap::new(), last_publish: Instant::now() }
+        Self {
+            grid: HashMap::new(),
+            last_publish: Instant::now(),
+        }
     }
 
     fn on_quote(&mut self, q: OptionQuote) -> Result<Option<SurfaceUpdate>> {
@@ -176,11 +244,7 @@ impl SurfaceBuilder {
     }
 
     fn to_surface_update(&self) -> SurfaceUpdate {
-        let mut strikes: Vec<f64> = self
-            .grid
-            .keys()
-            .map(|(k, _)| (*k as f64) / 100.0)
-            .collect();
+        let mut strikes: Vec<f64> = self.grid.keys().map(|(k, _)| (*k as f64) / 100.0).collect();
         strikes.sort_by(|a, b| a.partial_cmp(b).unwrap());
         strikes.dedup();
         let mut expiries: Vec<NaiveDate> = self.grid.keys().map(|(_, e)| *e).collect();
@@ -193,35 +257,90 @@ impl SurfaceBuilder {
                 sigma.push(*self.grid.get(&key).unwrap_or(&f64::NAN));
             }
         }
-        SurfaceUpdate { strikes, expiries, sigma }
+        SurfaceUpdate {
+            strikes,
+            expiries,
+            sigma,
+        }
     }
 }
 
 pub async fn stream_quotes(symbol: String, cfg: AlpacaConfig) -> Result<()> {
     let rest = RestClient::new(cfg.clone());
-    let contracts = rest
-        .get_options_chain(
-            &symbol,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(1000),
-            None,
-        )
-        .await?;
+
+    // Fetch option contracts with a timeout
+    info!("Fetching option contracts for {}", symbol);
+    let contracts = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        rest.get_options_chain(&symbol, None, None, None, None, None, Some(1000), None)
+    ).await {
+        Ok(result) => match result {
+            Ok(contracts) => contracts,
+            Err(e) => {
+                warn!("Error fetching option contracts: {}", e);
+                // Create a minimal surface update with a warning
+                let update = SurfaceUpdate {
+                    strikes: vec![100.0, 200.0, 300.0],
+                    expiries: vec![chrono::Local::now().date_naive()],
+                    sigma: vec![0.0; 3], // Just placeholder data
+                };
+                let _ = SURFACE_BUS.send(update);
+                return Err(e);
+            }
+        },
+        Err(_) => {
+            warn!("Timeout fetching option contracts for {}", symbol);
+            // Create a minimal surface update with a warning
+            let update = SurfaceUpdate {
+                strikes: vec![100.0, 200.0, 300.0],
+                expiries: vec![chrono::Local::now().date_naive()],
+                sigma: vec![0.0; 3], // Just placeholder data
+            };
+            let _ = SURFACE_BUS.send(update);
+            return Err(OptionsError::Other("Timeout fetching option contracts".to_string()));
+        }
+    };
+
     let option_symbols: Vec<String> = contracts.results.iter().map(|c| c.symbol.clone()).collect();
     if option_symbols.is_empty() {
+        warn!("No option symbols found for {}", symbol);
         return Ok(());
     }
+
+    info!("Connecting to WebSocket for {} option symbols", option_symbols.len());
     let ws = WebSocketClient::new(cfg);
-    ws.connect(option_symbols).await?;
+
+    // Connect to WebSocket with a timeout
+    match tokio::time::timeout(std::time::Duration::from_secs(30), ws.connect(option_symbols)).await {
+        Ok(result) => {
+            if let Err(e) = result {
+                warn!("Error connecting to WebSocket: {}", e);
+                return Err(e);
+            }
+        },
+        Err(_) => {
+            warn!("Timeout connecting to WebSocket");
+            return Err(OptionsError::Other("Timeout connecting to WebSocket".to_string()));
+        }
+    }
+
+    info!("WebSocket connected, processing quotes");
     let mut builder = SurfaceBuilder::new();
+
+    // Process quotes with periodic updates even if no new quotes arrive
+    let mut last_update = std::time::Instant::now();
+
     while let Some(q) = ws.next_option_quote().await? {
         if let Some(update) = builder.on_quote(q)? {
             let _ = SURFACE_BUS.send(update);
+            last_update = std::time::Instant::now();
+        } else if last_update.elapsed() > std::time::Duration::from_secs(10) {
+            // Force an update if it's been more than 10 seconds
+            let update = builder.to_surface_update();
+            let _ = SURFACE_BUS.send(update);
+            last_update = std::time::Instant::now();
         }
     }
+
     Ok(())
 }

@@ -2802,6 +2802,7 @@ dependencies = [
  "image 0.25.6",
  "minifb",
  "ndarray",
+ "once_cell",
  "plotters",
  "plotters-bitmap",
  "rayon",
