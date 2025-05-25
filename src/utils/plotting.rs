@@ -17,11 +17,7 @@ pub fn plot_volatility_smile<P: AsRef<Path>>(
     let output_path = output_path.as_ref();
 
     let img = plot_volatility_smile_in_memory(strikes, volatilities, symbol, expiration)?;
-    let pixels: Vec<u8> = img
-        .pixels
-        .iter()
-        .flat_map(|p| p.to_array())
-        .collect();
+    let pixels: Vec<u8> = img.pixels.iter().flat_map(|p| p.to_array()).collect();
     image::save_buffer_with_format(
         output_path,
         &pixels,
@@ -135,11 +131,10 @@ pub fn plot_volatility_smile_in_memory(
             .map_err(|e| OptionsError::Other(e.to_string()))?;
     }
 
-    Ok(ColorImage::from_rgba_unmultiplied([
-        width as usize,
-        height as usize,
-    ],
-    &buffer))
+    Ok(ColorImage::from_rgba_unmultiplied(
+        [width as usize, height as usize],
+        &buffer,
+    ))
 }
 
 pub fn plot_volatility_term_structure<P: AsRef<Path>>(
@@ -253,11 +248,7 @@ pub fn plot_volatility_surface<P: AsRef<Path>>(
     let output_path = output_path.as_ref();
 
     let img = plot_volatility_surface_in_memory(surface)?;
-    let pixels: Vec<u8> = img
-        .pixels
-        .iter()
-        .flat_map(|p| p.to_array())
-        .collect();
+    let pixels: Vec<u8> = img.pixels.iter().flat_map(|p| p.to_array()).collect();
     image::save_buffer_with_format(
         output_path,
         &pixels,
@@ -434,9 +425,8 @@ pub fn plot_volatility_surface_in_memory(surface: &VolatilitySurface) -> Result<
             .map_err(|e| OptionsError::Other(e.to_string()))?;
     }
 
-    Ok(ColorImage::from_rgba_unmultiplied([
-        width as usize,
-        height as usize,
-    ],
-    &buffer))
+    Ok(ColorImage::from_rgba_unmultiplied(
+        [width as usize, height as usize],
+        &buffer,
+    ))
 }

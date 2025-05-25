@@ -1,18 +1,13 @@
+use chrono::{DateTime, Utc};
 use eframe::egui;
-use image;
 use options_rs::api::{RestClient, WebSocketClient};
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
 use options_rs::models::volatility::{ImpliedVolatility, VolatilitySurface};
 use options_rs::models::{OptionContract, OptionQuote, OptionType};
-use options_rs::utils::{
-    plot_volatility_smile, plot_volatility_smile_in_memory, plot_volatility_surface,
-    plot_volatility_surface_in_memory,
-};
-use chrono::{DateTime, Utc};
+use options_rs::utils::{plot_volatility_smile_in_memory, plot_volatility_surface_in_memory};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, Duration};
@@ -226,7 +221,6 @@ async fn run_volatility_surface_plot(
     let surface = Arc::new(RwLock::new(None));
     let risk_free_rate = 0.03; // Could be made configurable
 
-
     // Different data fetching strategies based on the data source
     match data_source {
         DataSource::LiveUpdates => {
@@ -330,19 +324,27 @@ async fn run_volatility_surface_plot(
             if snapshot_count > 0 {
                 let sample_count = std::cmp::min(5, snapshot_count);
                 info!("Sample of {} snapshots for debugging:", sample_count);
-                for (i, (symbol, snapshot)) in snapshots.snapshots.iter().take(sample_count).enumerate() {
-                    info!("Snapshot {}: Symbol={}", i+1, symbol);
+                for (i, (symbol, snapshot)) in
+                    snapshots.snapshots.iter().take(sample_count).enumerate()
+                {
+                    info!("Snapshot {}: Symbol={}", i + 1, symbol);
 
                     // Log the raw snapshot data to see its structure
                     info!("  Raw snapshot data: {:?}", snapshot);
 
                     if let Some(last_quote) = &snapshot.last_quote {
-                        info!("  Last Quote: bid={}, ask={}, timestamp={}", last_quote.bid, last_quote.ask, last_quote.t);
+                        info!(
+                            "  Last Quote: bid={}, ask={}, timestamp={}",
+                            last_quote.bid, last_quote.ask, last_quote.t
+                        );
                     } else {
                         info!("  No Last Quote available");
                     }
                     if let Some(last_trade) = &snapshot.last_trade {
-                        info!("  Last Trade: price={}, size={}, timestamp={}", last_trade.price, last_trade.size, last_trade.t);
+                        info!(
+                            "  Last Trade: price={}, size={}, timestamp={}",
+                            last_trade.price, last_trade.size, last_trade.t
+                        );
                     } else {
                         info!("  No Last Trade available");
                     }
@@ -353,7 +355,7 @@ async fn run_volatility_surface_plot(
             let mut quotes = latest_quotes.write().await;
             let mut parse_failures = 0;
             let mut missing_data_count = 0;
-            let mut fallback_successes = 0;
+            let fallback_successes = 0;
             let mut manual_contract_creations = 0;
 
             for (symbol_key, snapshot) in snapshots.snapshots.iter() {
@@ -365,9 +367,12 @@ async fn run_volatility_surface_plot(
                 // If that fails, try to create a contract manually from the OCC symbol
                 let contract = match contract_result {
                     Some(c) => {
-                        info!("Successfully parsed OCC symbol: {} -> {}", symbol_key, c.option_symbol);
+                        info!(
+                            "Successfully parsed OCC symbol: {} -> {}",
+                            symbol_key, c.option_symbol
+                        );
                         Some(c)
-                    },
+                    }
                     None => {
                         parse_failures += 1;
                         warn!("Failed to parse OCC symbol: {}", symbol_key);
@@ -378,7 +383,11 @@ async fn run_volatility_surface_plot(
                         let p_pos = symbol_key.find('P');
 
                         if c_pos.is_some() || p_pos.is_some() {
-                            let type_pos = if c_pos.is_some() { c_pos.unwrap() } else { p_pos.unwrap() };
+                            let type_pos = if c_pos.is_some() {
+                                c_pos.unwrap()
+                            } else {
+                                p_pos.unwrap()
+                            };
 
                             if type_pos >= 6 && type_pos + 1 < symbol_key.len() {
                                 let underlying = &symbol_key[0..(type_pos - 6)];
@@ -386,25 +395,39 @@ async fn run_volatility_surface_plot(
                                 let option_type_char = symbol_key.chars().nth(type_pos).unwrap();
                                 let strike_str = &symbol_key[(type_pos + 1)..];
 
-                                info!("Manual parsing: underlying={}, date={}, type={}, strike={}", 
-                                      underlying, date_str, option_type_char, strike_str);
+                                info!(
+                                    "Manual parsing: underlying={}, date={}, type={}, strike={}",
+                                    underlying, date_str, option_type_char, strike_str
+                                );
 
                                 // Try to parse the date
                                 if date_str.len() == 6 {
                                     if let (Ok(year), Ok(month), Ok(day)) = (
                                         date_str[0..2].parse::<i32>(),
                                         date_str[2..4].parse::<u32>(),
-                                        date_str[4..6].parse::<u32>()
+                                        date_str[4..6].parse::<u32>(),
                                     ) {
                                         // Try to parse the strike price
                                         if let Ok(strike_int) = strike_str.parse::<u32>() {
                                             let strike = strike_int as f64 / 1000.0;
 
                                             // Create the expiration date
-                                            if let Some(naive_date) = chrono::NaiveDate::from_ymd_opt(2000 + year, month, day) {
-                                                if let Some(naive_datetime) = naive_date.and_hms_opt(16, 0, 0) {
-                                                    if let Some(expiration) = naive_datetime.and_local_timezone(chrono::Utc).single() {
-                                                        let option_type = if option_type_char == 'C' {
+                                            if let Some(naive_date) =
+                                                chrono::NaiveDate::from_ymd_opt(
+                                                    2000 + year,
+                                                    month,
+                                                    day,
+                                                )
+                                            {
+                                                if let Some(naive_datetime) =
+                                                    naive_date.and_hms_opt(16, 0, 0)
+                                                {
+                                                    if let Some(expiration) = naive_datetime
+                                                        .and_local_timezone(chrono::Utc)
+                                                        .single()
+                                                    {
+                                                        let option_type = if option_type_char == 'C'
+                                                        {
                                                             OptionType::Call
                                                         } else {
                                                             OptionType::Put
@@ -414,11 +437,14 @@ async fn run_volatility_surface_plot(
                                                             underlying.to_string(),
                                                             option_type,
                                                             strike,
-                                                            expiration
+                                                            expiration,
                                                         );
 
                                                         manual_contract_creations += 1;
-                                                        info!("Manually created contract: {}", contract.option_symbol);
+                                                        info!(
+                                                            "Manually created contract: {}",
+                                                            contract.option_symbol
+                                                        );
                                                         Some(contract)
                                                     } else {
                                                         warn!("Failed to convert datetime to UTC");
@@ -429,7 +455,12 @@ async fn run_volatility_surface_plot(
                                                     None
                                                 }
                                             } else {
-                                                warn!("Failed to create date from {}-{}-{}", 2000 + year, month, day);
+                                                warn!(
+                                                    "Failed to create date from {}-{}-{}",
+                                                    2000 + year,
+                                                    month,
+                                                    day
+                                                );
                                                 None
                                             }
                                         } else {
@@ -534,7 +565,8 @@ async fn run_volatility_surface_plot(
                     debug!("Extracted data for {}: bid={:?}, ask={:?}, last_price={:?}, volume={:?}, timestamp={:?}",
                            symbol, bid, ask, last_price, volume, timestamp);
 
-                    if bid.is_some() && ask.is_some() && last_price.is_some() && timestamp.is_some() {
+                    if bid.is_some() && ask.is_some() && last_price.is_some() && timestamp.is_some()
+                    {
                         let bid = bid.unwrap();
                         let ask = ask.unwrap();
                         let last_price = last_price.unwrap();
@@ -571,10 +603,18 @@ async fn run_volatility_surface_plot(
                 }
             }
 
-
-            info!("OCC symbol parse failures: {}/{}", parse_failures, snapshot_count);
-            info!("Fallback contract creations: {}/{}", fallback_successes, parse_failures);
-            info!("Missing quote/trade data: {}/{}", missing_data_count, snapshot_count);
+            info!(
+                "OCC symbol parse failures: {}/{}",
+                parse_failures, snapshot_count
+            );
+            info!(
+                "Fallback contract creations: {}/{}",
+                fallback_successes, parse_failures
+            );
+            info!(
+                "Missing quote/trade data: {}/{}",
+                missing_data_count, snapshot_count
+            );
 
             let quote_count = quotes.len();
             info!("Processed {} option quotes from snapshots", quote_count);

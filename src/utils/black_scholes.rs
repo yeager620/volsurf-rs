@@ -152,9 +152,17 @@ pub fn implied_volatility(
         // Relaxed tolerance that increases with iterations
         // More relaxed for calls, especially for early iterations
         let tolerance = if is_call {
-            if i < 50 { 1e-3 } else { 1e-2 }
+            if i < 50 {
+                1e-3
+            } else {
+                1e-2
+            }
         } else {
-            if i < 20 { 1e-4 } else { 1e-3 }
+            if i < 20 {
+                1e-4
+            } else {
+                1e-3
+            }
         };
 
         if diff.abs() < tolerance {
@@ -182,9 +190,21 @@ pub fn implied_volatility(
         // More aggressive damping for calls
         let step = diff / v;
         let damping = if is_call {
-            if i < 20 { 0.3 } else if i < 50 { 0.5 } else { 0.7 }
+            if i < 20 {
+                0.3
+            } else if i < 50 {
+                0.5
+            } else {
+                0.7
+            }
         } else {
-            if i < 10 { 0.5 } else if i < 30 { 0.7 } else { 0.9 }
+            if i < 10 {
+                0.5
+            } else if i < 30 {
+                0.7
+            } else {
+                0.9
+            }
         };
         sigma -= step * damping;
 

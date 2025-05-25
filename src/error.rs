@@ -1,5 +1,7 @@
-use thiserror::Error;
 use image::error::ImageError;
+use plotters::drawing::DrawingAreaErrorKind;
+use plotters_bitmap::BitMapBackendError;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum OptionsError {
@@ -23,6 +25,9 @@ pub enum OptionsError {
 
     #[error("Image error: {0}")]
     ImageError(#[from] ImageError),
+
+    #[error("Drawing error: {0}")]
+    DrawingError(#[from] DrawingAreaErrorKind<BitMapBackendError>),
 
     #[error("{0}")]
     Other(String),

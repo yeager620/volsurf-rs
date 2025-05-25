@@ -6,12 +6,10 @@ description = "Low-latency Alpaca Markets API client for options pricing and vol
 authors = ["Evan Yeager"]
 
 [dependencies]
-
 tokio = { version = "1.28", features = ["full", "rt-multi-thread"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenv = "0.15"
-config = "0.13"
 thiserror = "1.0"
 ndarray = { version = "0.15", features = ["serde"] }
 statrs = "0.16"  # Statistical computations
@@ -19,12 +17,14 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
-plotters = "0.3"
+plotters = { version = "0.3.7" }
+plotters-bitmap = "0.3"
 colorous = "1.0.10"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 tokio-tungstenite = { version = "0.18", features = ["native-tls"] }
-url = "2.3"
-eframe = "0.22.0"  # egui framework
-egui = "0.22.0"    # GUI library
-rayon = "1.7"      # Parallel computing
+eframe = "0.22.0"
+egui = "0.22.0"
+rayon = "1.7"
 image = "0.25.6"
+minifb = "0.25"
+url = "2.4.1"

@@ -80,7 +80,10 @@ impl OptionContract {
 
         // Check if we have enough characters for a valid date part (at least 6 characters)
         if type_pos < 6 {
-            warn!("OCC symbol too short for date part: {} (type_pos={})", occ_symbol, type_pos);
+            warn!(
+                "OCC symbol too short for date part: {} (type_pos={})",
+                occ_symbol, type_pos
+            );
             return None;
         }
 
@@ -104,7 +107,10 @@ impl OptionContract {
             Some('C') => OptionType::Call,
             Some('P') => OptionType::Put,
             _ => {
-                warn!("Invalid option type character in OCC symbol: {}", occ_symbol);
+                warn!(
+                    "Invalid option type character in OCC symbol: {}",
+                    occ_symbol
+                );
                 return None;
             }
         };
@@ -122,14 +128,20 @@ impl OptionContract {
         let strike = match strike_str.parse::<u32>() {
             Ok(s) => s as f64 / 1000.0,
             Err(e) => {
-                warn!("Failed to parse strike price '{}' in OCC symbol {}: {}", strike_str, occ_symbol, e);
+                warn!(
+                    "Failed to parse strike price '{}' in OCC symbol {}: {}",
+                    strike_str, occ_symbol, e
+                );
                 return None;
             }
         };
 
         // Ensure the date string is exactly 6 characters long
         if date_str.len() != 6 {
-            warn!("Date string '{}' is not exactly 6 characters long in OCC symbol: {}", date_str, occ_symbol);
+            warn!(
+                "Date string '{}' is not exactly 6 characters long in OCC symbol: {}",
+                date_str, occ_symbol
+            );
             return None;
         }
 
@@ -138,13 +150,21 @@ impl OptionContract {
         let month_str = &date_str[2..4];
         let day_str = &date_str[4..6];
 
-        trace!("Parsing date components: year={}, month={}, day={}", year_str, month_str, day_str);
+        trace!(
+            "Parsing date components: year={}, month={}, day={}",
+            year_str,
+            month_str,
+            day_str
+        );
 
         // Parse year (add 2000 to get the full year)
         let year = match year_str.parse::<i32>() {
             Ok(y) => 2000 + y,
             Err(e) => {
-                warn!("Failed to parse year '{}' in OCC symbol {}: {}", year_str, occ_symbol, e);
+                warn!(
+                    "Failed to parse year '{}' in OCC symbol {}: {}",
+                    year_str, occ_symbol, e
+                );
                 return None;
             }
         };
@@ -153,11 +173,17 @@ impl OptionContract {
         let month = match month_str.parse::<u32>() {
             Ok(m) if m >= 1 && m <= 12 => m,
             Ok(m) => {
-                warn!("Invalid month value {} (must be 1-12) in OCC symbol: {}", m, occ_symbol);
+                warn!(
+                    "Invalid month value {} (must be 1-12) in OCC symbol: {}",
+                    m, occ_symbol
+                );
                 return None;
             }
             Err(e) => {
-                warn!("Failed to parse month '{}' in OCC symbol {}: {}", month_str, occ_symbol, e);
+                warn!(
+                    "Failed to parse month '{}' in OCC symbol {}: {}",
+                    month_str, occ_symbol, e
+                );
                 return None;
             }
         };
@@ -166,11 +192,17 @@ impl OptionContract {
         let day = match day_str.parse::<u32>() {
             Ok(d) if d >= 1 && d <= 31 => d,
             Ok(d) => {
-                warn!("Invalid day value {} (must be 1-31) in OCC symbol: {}", d, occ_symbol);
+                warn!(
+                    "Invalid day value {} (must be 1-31) in OCC symbol: {}",
+                    d, occ_symbol
+                );
                 return None;
             }
             Err(e) => {
-                warn!("Failed to parse day '{}' in OCC symbol {}: {}", day_str, occ_symbol, e);
+                warn!(
+                    "Failed to parse day '{}' in OCC symbol {}: {}",
+                    day_str, occ_symbol, e
+                );
                 return None;
             }
         };
@@ -179,7 +211,10 @@ impl OptionContract {
         let naive_date = match chrono::NaiveDate::from_ymd_opt(year, month, day) {
             Some(d) => d,
             None => {
-                warn!("Invalid date {}-{}-{} in OCC symbol: {}", year, month, day, occ_symbol);
+                warn!(
+                    "Invalid date {}-{}-{} in OCC symbol: {}",
+                    year, month, day, occ_symbol
+                );
                 return None;
             }
         };
@@ -188,7 +223,10 @@ impl OptionContract {
         let naive_datetime = match naive_date.and_hms_opt(16, 0, 0) {
             Some(dt) => dt,
             None => {
-                warn!("Failed to create datetime for {}-{}-{} 16:00:00 in OCC symbol: {}", year, month, day, occ_symbol);
+                warn!(
+                    "Failed to create datetime for {}-{}-{} 16:00:00 in OCC symbol: {}",
+                    year, month, day, occ_symbol
+                );
                 return None;
             }
         };
@@ -197,13 +235,22 @@ impl OptionContract {
         let expiration = match naive_datetime.and_local_timezone(chrono::Utc).single() {
             Some(e) => e,
             None => {
-                warn!("Failed to convert to UTC for {}-{}-{} 16:00:00 in OCC symbol: {}", year, month, day, occ_symbol);
+                warn!(
+                    "Failed to convert to UTC for {}-{}-{} 16:00:00 in OCC symbol: {}",
+                    year, month, day, occ_symbol
+                );
                 return None;
             }
         };
 
-        trace!("Successfully parsed OCC symbol: {} -> symbol={}, type={:?}, strike={}, expiration={}", 
-               occ_symbol, symbol, option_type, strike, expiration);
+        trace!(
+            "Successfully parsed OCC symbol: {} -> symbol={}, type={:?}, strike={}, expiration={}",
+            occ_symbol,
+            symbol,
+            option_type,
+            strike,
+            expiration
+        );
 
         Some(Self {
             symbol,
