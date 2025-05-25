@@ -189,33 +189,41 @@ async fn run_volatility_surface_plot(
 
     let rest_client = Arc::new(RestClient::new(config.alpaca.clone()));
 
-    // Get option contracts for the symbol
-    info!("Fetching options chain for {}", symbol);
-    let options_data = rest_client
-        .get_options_chain(
-            symbol, None, // expiration_date
-            None, // option_type
-            None, // strike_lower
-            None, // strike_upper
-            None, // limit_per_expiration
-            None, // limit_strikes
-            None, // greeks
+    // We'll use option_chain_snapshots for both data sources as per the requirement
+    // to default to using the REST API for grabbing the most recent option chain snapshots
+    info!("Fetching option chain snapshots for {}", symbol);
+    let snapshots = rest_client
+        .get_option_chain_snapshots(
+            symbol,
+            Some("indicative"), // Use indicative feed as mentioned in the docs
+            Some(100),          // Limit to 100 snapshots
+            None,               // updated_since
+            None,               // page_token
+            None,               // option_type
+            None,               // strike_price_gte
+            None,               // strike_price_lte
+            None,               // expiration_date
+            None,               // expiration_date_gte
+            None,               // expiration_date_lte
+            None,               // root_symbol
         )
         .await?;
-    let options = options_data.results;
-    info!(
-        "Found {} options for {} using get_options_chain API",
-        options.len(),
-        symbol
-    );
 
-    // Only exit early if we're using LiveUpdates data source and no options are found
-    if options.is_empty() && data_source == DataSource::LiveUpdates {
-        warn!("No options found for {} using get_options_chain API. This symbol may not have options available or there might be an issue with the API. Exiting.", symbol);
+    let snapshot_count = snapshots.snapshots.len();
+    info!("Fetched {} option snapshots for {}", snapshot_count, symbol);
+
+    if snapshot_count == 0 {
+        warn!("No option snapshots found for {} using get_option_chain_snapshots API with feed=indicative.", symbol);
+        warn!("This could be because:");
+        warn!("1. The symbol {} does not have any options available", symbol);
+        warn!("2. The symbol {} is not valid or not supported by Alpaca", symbol);
+        warn!("3. There might be an issue with your Alpaca API credentials or subscription");
+        warn!("4. The Alpaca API might be experiencing issues");
+        warn!("Please check the symbol and try again, or try a different symbol.");
         return Ok(());
     }
 
-    let option_symbols: Vec<String> = options.iter().map(|opt| opt.symbol.clone()).collect();
+    let option_symbols: Vec<String> = snapshots.snapshots.keys().cloned().collect();
 
     let latest_quotes = Arc::new(RwLock::new(HashMap::new()));
     let surface = Arc::new(RwLock::new(None));
@@ -271,54 +279,11 @@ async fn run_volatility_surface_plot(
             });
         }
         DataSource::MostRecentOptionsChain => {
-            // Fetch the most recent options chain using the snapshots API
+            // We're already fetched the option chain snapshots earlier in the function
             info!(
-                "Fetching most recent options chain snapshots for {}",
+                "Using previously fetched option chain snapshots for {}",
                 symbol
             );
-
-            // Get option chain snapshots
-            info!(
-                "Calling get_option_chain_snapshots API for {} with feed=indicative and limit=100",
-                symbol
-            );
-            let snapshots = rest_client
-                .get_option_chain_snapshots(
-                    symbol,
-                    Some("indicative"), // Use indicative feed as mentioned in the docs
-                    Some(100),          // Limit to 100 snapshots
-                    None,               // updated_since
-                    None,               // page_token
-                    None,               // option_type
-                    None,               // strike_price_gte
-                    None,               // strike_price_lte
-                    None,               // expiration_date
-                    None,               // expiration_date_gte
-                    None,               // expiration_date_lte
-                    None,               // root_symbol
-                )
-                .await?;
-
-            let snapshot_count = snapshots.snapshots.len();
-            info!("Fetched {} option snapshots for {}", snapshot_count, symbol);
-
-            if snapshot_count == 0 {
-                warn!("No option snapshots found for {} using get_option_chain_snapshots API with feed=indicative.", symbol);
-                warn!("This could be because:");
-                warn!(
-                    "1. The symbol {} does not have any options available",
-                    symbol
-                );
-                warn!(
-                    "2. The symbol {} is not valid or not supported by Alpaca",
-                    symbol
-                );
-                warn!(
-                    "3. There might be an issue with your Alpaca API credentials or subscription"
-                );
-                warn!("4. The Alpaca API might be experiencing issues");
-                warn!("Please check the symbol and try again, or try a different symbol.");
-            }
 
             // Log the first few snapshots for debugging
             if snapshot_count > 0 {

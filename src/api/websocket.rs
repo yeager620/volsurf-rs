@@ -158,8 +158,18 @@ impl WebSocketClient {
             ));
         }
 
-        let ws_url = "wss://stream.data.alpaca.markets/v1beta1/options";
-        let url = Url::parse(ws_url).map_err(|e| {
+        // Derive WebSocket URL from data_url in configuration
+        let data_url = &self.config.data_url;
+        let ws_domain = if data_url.starts_with("https://") {
+            data_url.strip_prefix("https://").unwrap_or("data.alpaca.markets")
+        } else {
+            "data.alpaca.markets"
+        };
+
+        let ws_url = format!("wss://{}/v1beta1/options", ws_domain);
+        info!("Using WebSocket URL: {}", ws_url);
+
+        let url = Url::parse(&ws_url).map_err(|e| {
             OptionsError::WebSocketError(format!("Failed to parse WebSocket URL: {}", e))
         })?;
 
@@ -169,19 +179,50 @@ impl WebSocketClient {
         let symbols_clone = symbols.clone();
         let notification_tx = self.notification_tx.clone();
 
+        // Helper function to extract status code from websocket error
+        fn get_status_from_error(err: &tokio_tungstenite::tungstenite::Error) -> Option<reqwest::StatusCode> {
+            use tokio_tungstenite::tungstenite::Error;
+            match err {
+                Error::Http(response) => Some(reqwest::StatusCode::from_u16(response.status().as_u16()).ok()?),
+                _ => None,
+            }
+        }
+
         tokio::spawn(async move {
             info!(
                 "Starting options data stream for {} symbols",
                 symbols_clone.len()
             );
 
-            let (ws_stream, _) = match connect_async(url).await {
+            let (ws_stream, response) = match connect_async(url).await {
                 Ok(conn) => conn,
                 Err(e) => {
-                    warn!("Failed to connect to WebSocket: {}", e);
+                    let error_msg = format!("Failed to connect to WebSocket: {}", e);
+                    warn!("{}", error_msg);
+
+                    // Check if it's an HTTP error and provide more details
+                    if let Some(status) = get_status_from_error(&e) {
+                        warn!("HTTP error: {} {}", status.as_u16(), status.canonical_reason().unwrap_or("Unknown"));
+
+                        if status == reqwest::StatusCode::NOT_FOUND {
+                            warn!("The WebSocket endpoint was not found (404). This could be because:");
+                            warn!("1. The WebSocket URL is incorrect");
+                            warn!("2. The Alpaca API has changed");
+                            warn!("3. Your Alpaca subscription doesn't include options data");
+                        } else if status == reqwest::StatusCode::UNAUTHORIZED {
+                            warn!("Authentication failed (401). Please check your API key and secret.");
+                        } else if status == reqwest::StatusCode::FORBIDDEN {
+                            warn!("Access forbidden (403). Your account may not have access to options data.");
+                        }
+                    }
+
                     return;
                 }
             };
+
+            // Log successful connection details
+            info!("WebSocket connected with status: {}", response.status());
+            debug!("WebSocket response headers: {:?}", response.headers());
 
             info!("WebSocket connected");
 

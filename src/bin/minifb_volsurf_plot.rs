@@ -15,7 +15,7 @@ async fn main() -> Result<()> {
     let symbol = if args.len() > 1 {
         args[1].clone()
     } else {
-        "SPY".to_string()
+        "AAPL".to_string()
     };
 
     info!("Using ticker symbol: {}", symbol);

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use once_cell::sync::Lazy;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use crate::api::{RestClient, WebSocketClient};
 use crate::config::AlpacaConfig;
 use crate::error::{OptionsError, Result};
-use crate::models::{ImpliedVolatility, OptionQuote, SurfaceUpdate};
+use crate::models::{ImpliedVolatility, OptionContract, OptionQuote, SurfaceUpdate};
 
 use minifb::{Key, Window, WindowOptions};
 use plotters::prelude::*;
@@ -268,14 +268,27 @@ impl SurfaceBuilder {
 pub async fn stream_quotes(symbol: String, cfg: AlpacaConfig) -> Result<()> {
     let rest = RestClient::new(cfg.clone());
 
-    // Fetch option contracts with a timeout
+    // Fetch option contracts with a timeout using get_option_chain_snapshots with feed=indicative
     info!("Fetching option contracts for {}", symbol);
-    let contracts = match tokio::time::timeout(
+    let snapshots = match tokio::time::timeout(
         std::time::Duration::from_secs(30),
-        rest.get_options_chain(&symbol, None, None, None, None, None, Some(1000), None)
+        rest.get_option_chain_snapshots(
+            &symbol,
+            Some("indicative"), // Use indicative feed as mentioned in the docs
+            Some(100),          // Limit to 100 snapshots
+            None,               // updated_since
+            None,               // page_token
+            None,               // option_type
+            None,               // strike_price_gte
+            None,               // strike_price_lte
+            None,               // expiration_date
+            None,               // expiration_date_gte
+            None,               // expiration_date_lte
+            None,               // root_symbol
+        )
     ).await {
         Ok(result) => match result {
-            Ok(contracts) => contracts,
+            Ok(snapshots) => snapshots,
             Err(e) => {
                 warn!("Error fetching option contracts: {}", e);
                 // Create a minimal surface update with a warning
@@ -301,46 +314,154 @@ pub async fn stream_quotes(symbol: String, cfg: AlpacaConfig) -> Result<()> {
         }
     };
 
-    let option_symbols: Vec<String> = contracts.results.iter().map(|c| c.symbol.clone()).collect();
+    let option_symbols: Vec<String> = snapshots.snapshots.keys().cloned().collect();
     if option_symbols.is_empty() {
         warn!("No option symbols found for {}", symbol);
-        return Ok(());
+        warn!("This could be because:");
+        warn!("1. The symbol {} does not have any options available", symbol);
+        warn!("2. The symbol {} is not valid or not supported by Alpaca", symbol);
+        warn!("3. There might be an issue with your Alpaca API credentials or subscription");
+        warn!("4. The Alpaca API might be experiencing issues");
+
+        // Create a surface update with a warning message
+        let update = SurfaceUpdate {
+            strikes: vec![100.0, 200.0, 300.0],
+            expiries: vec![chrono::Local::now().date_naive()],
+            sigma: vec![0.0; 3], // Just placeholder data
+        };
+        let _ = SURFACE_BUS.send(update);
+
+        return Err(OptionsError::Other(format!("No option symbols found for {}", symbol)));
     }
 
-    info!("Connecting to WebSocket for {} option symbols", option_symbols.len());
-    let ws = WebSocketClient::new(cfg);
-
-    // Connect to WebSocket with a timeout
-    match tokio::time::timeout(std::time::Duration::from_secs(30), ws.connect(option_symbols)).await {
-        Ok(result) => {
-            if let Err(e) = result {
-                warn!("Error connecting to WebSocket: {}", e);
-                return Err(e);
-            }
-        },
-        Err(_) => {
-            warn!("Timeout connecting to WebSocket");
-            return Err(OptionsError::Other("Timeout connecting to WebSocket".to_string()));
-        }
-    }
-
-    info!("WebSocket connected, processing quotes");
+    info!("Processing {} option snapshots for {}", option_symbols.len(), symbol);
     let mut builder = SurfaceBuilder::new();
+    let mut processed_count = 0;
+    let mut parse_failures = 0;
+    let mut missing_data_count = 0;
 
-    // Process quotes with periodic updates even if no new quotes arrive
-    let mut last_update = std::time::Instant::now();
+    // Process each snapshot to create option quotes
+    for (symbol_key, snapshot) in snapshots.snapshots.iter() {
+        // Try to create a contract from the OCC symbol
+        let contract_result = OptionContract::from_occ_symbol(symbol_key);
 
-    while let Some(q) = ws.next_option_quote().await? {
-        if let Some(update) = builder.on_quote(q)? {
-            let _ = SURFACE_BUS.send(update);
-            last_update = std::time::Instant::now();
-        } else if last_update.elapsed() > std::time::Duration::from_secs(10) {
-            // Force an update if it's been more than 10 seconds
-            let update = builder.to_surface_update();
-            let _ = SURFACE_BUS.send(update);
-            last_update = std::time::Instant::now();
+        if let Some(contract) = contract_result {
+            // Extract quote data from the snapshot
+            let mut bid: Option<f64> = None;
+            let mut ask: Option<f64> = None;
+            let mut last_price: Option<f64> = None;
+            let mut timestamp: Option<DateTime<Utc>> = None;
+
+            // Try to get data from last_quote and last_trade first
+            if let Some(quote) = &snapshot.last_quote {
+                bid = Some(quote.bid);
+                ask = Some(quote.ask);
+                timestamp = Some(quote.t);
+            }
+
+            if let Some(trade) = &snapshot.last_trade {
+                last_price = Some(trade.price);
+                if timestamp.is_none() {
+                    timestamp = Some(trade.t);
+                }
+            }
+
+            // If we don't have bid/ask from last_quote, try to get from dailyBar or minuteBar
+            if bid.is_none() || ask.is_none() {
+                if let Some(bar) = &snapshot.dailyBar {
+                    // Use close as both bid and ask if we don't have them
+                    if bid.is_none() {
+                        bid = Some(bar.c * 0.99); // Slightly lower than close for bid
+                    }
+                    if ask.is_none() {
+                        ask = Some(bar.c * 1.01); // Slightly higher than close for ask
+                    }
+                    if timestamp.is_none() {
+                        timestamp = Some(bar.t);
+                    }
+                } else if let Some(bar) = &snapshot.minuteBar {
+                    // Use close as both bid and ask if we don't have them
+                    if bid.is_none() {
+                        bid = Some(bar.c * 0.99); // Slightly lower than close for bid
+                    }
+                    if ask.is_none() {
+                        ask = Some(bar.c * 1.01); // Slightly higher than close for ask
+                    }
+                    if timestamp.is_none() {
+                        timestamp = Some(bar.t);
+                    }
+                }
+            }
+
+            // If we don't have last_price, try to get from dailyBar or minuteBar
+            if last_price.is_none() {
+                if let Some(bar) = &snapshot.dailyBar {
+                    last_price = Some(bar.c); // Use close as last price
+                } else if let Some(bar) = &snapshot.minuteBar {
+                    last_price = Some(bar.c); // Use close as last price
+                } else if let Some(bar) = &snapshot.prevDailyBar {
+                    last_price = Some(bar.c); // Use close as last price
+                }
+            }
+
+            // If we still don't have a timestamp, use current time
+            if timestamp.is_none() {
+                timestamp = Some(Utc::now());
+            }
+
+            if bid.is_some() && ask.is_some() && last_price.is_some() && timestamp.is_some() {
+                let bid = bid.unwrap();
+                let ask = ask.unwrap();
+                let last_price = last_price.unwrap();
+                let timestamp = timestamp.unwrap();
+
+                // Estimate underlying price (not ideal but workable)
+                let underlying_price = if contract.is_call() {
+                    contract.strike + ask - bid
+                } else {
+                    contract.strike - ask + bid
+                };
+
+                let quote = OptionQuote {
+                    contract,
+                    bid,
+                    ask,
+                    last: last_price,
+                    volume: 0, // Not critical for IV calculation
+                    open_interest: 0, // Not available in snapshots
+                    underlying_price,
+                    timestamp,
+                };
+
+                // Process the quote and potentially create a surface update
+                if let Some(update) = builder.on_quote(quote)? {
+                    let _ = SURFACE_BUS.send(update);
+                }
+
+                processed_count += 1;
+            } else {
+                missing_data_count += 1;
+            }
+        } else {
+            parse_failures += 1;
         }
     }
+
+    info!("Processed {}/{} option snapshots", processed_count, option_symbols.len());
+    info!("OCC symbol parse failures: {}", parse_failures);
+    info!("Missing quote/trade data: {}", missing_data_count);
+
+    if processed_count == 0 {
+        warn!("No valid option quotes could be created from snapshots for {}.", symbol);
+        return Err(OptionsError::Other(format!("No valid option quotes for {}", symbol)));
+    }
+
+    // Send a final surface update
+    let update = builder.to_surface_update();
+    let _ = SURFACE_BUS.send(update);
+
+    // Keep the task alive for a while to allow the GUI to display the data
+    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
 
     Ok(())
 }
