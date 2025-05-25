@@ -240,21 +240,76 @@ async fn run_volatility_surface_plot(
     let mut quotes = Vec::new();
     for (occ, snap) in snapshots.snapshots {
         if let Some(contract) = OptionContract::from_occ_symbol(&occ) {
-            if let (Some(q), Some(t)) = (snap.last_quote, snap.last_trade) {
+            let mut bid: Option<f64> = None;
+            let mut ask: Option<f64> = None;
+            let mut last_price: Option<f64> = None;
+            let mut volume: u64 = 0;
+            let mut timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
+
+            if let Some(q) = snap.last_quote {
+                bid = Some(q.bid);
+                ask = Some(q.ask);
+                timestamp = Some(q.t);
+            }
+
+            if let Some(t) = snap.last_trade {
+                last_price = Some(t.price);
+                volume = t.size;
+                if timestamp.is_none() {
+                    timestamp = Some(t.t);
+                }
+            }
+
+            if bid.is_none() || ask.is_none() {
+                if let Some(bar) = snap
+                    .dailyBar
+                    .as_ref()
+                    .or(snap.minuteBar.as_ref())
+                {
+                    if bid.is_none() {
+                        bid = Some(bar.c * 0.99);
+                    }
+                    if ask.is_none() {
+                        ask = Some(bar.c * 1.01);
+                    }
+                    if timestamp.is_none() {
+                        timestamp = Some(bar.t);
+                    }
+                }
+            }
+
+            if last_price.is_none() {
+                if let Some(bar) = snap
+                    .dailyBar
+                    .as_ref()
+                    .or(snap.minuteBar.as_ref())
+                    .or(snap.prevDailyBar.as_ref())
+                {
+                    last_price = Some(bar.c);
+                }
+            }
+
+            if timestamp.is_none() {
+                timestamp = Some(chrono::Utc::now());
+            }
+
+            if let (Some(bid), Some(ask), Some(last_price), Some(timestamp)) =
+                (bid, ask, last_price, timestamp)
+            {
                 let underlying_price = if contract.is_call() {
-                    contract.strike + q.ask - q.bid
+                    contract.strike + ask - bid
                 } else {
-                    contract.strike - q.ask + q.bid
+                    contract.strike - ask + bid
                 };
                 quotes.push(OptionQuote {
                     contract,
-                    bid: q.bid,
-                    ask: q.ask,
-                    last: t.price,
-                    volume: t.size,
+                    bid,
+                    ask,
+                    last: last_price,
+                    volume,
                     open_interest: 0,
                     underlying_price,
-                    timestamp: q.t,
+                    timestamp,
                 });
             }
         }
