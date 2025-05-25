@@ -200,7 +200,7 @@ async fn run_volatility_surface_plot(
         .get_option_chain_snapshots(
             symbol,
             Some("indicative"), // Use indicative feed as mentioned in the docs
-            Some(1),          // Limit to n snapshots
+            Some(100),          // Limit to n snapshots
             None,               // updated_since
             None,               // page_token
             None,               // option_type
