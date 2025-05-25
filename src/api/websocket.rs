@@ -2,7 +2,6 @@ use crate::config::AlpacaConfig;
 use crate::error::{OptionsError, Result};
 use crate::models::{OptionContract, OptionQuote as ModelOptionQuote, OptionType};
 use chrono::{DateTime, Utc};
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};

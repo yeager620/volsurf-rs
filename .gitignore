@@ -2,3 +2,4 @@
 .env
 .idea/*
 /output/
+src/.DS_Store

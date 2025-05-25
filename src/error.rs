@@ -1,4 +1,5 @@
 use thiserror::Error;
+use image::error::ImageError;
 
 #[derive(Error, Debug)]
 pub enum OptionsError {
@@ -19,6 +20,9 @@ pub enum OptionsError {
 
     #[error("Serde error: {0}")]
     SerdeError(#[from] serde_json::Error),
+
+    #[error("Image error: {0}")]
+    ImageError(#[from] ImageError),
 
     #[error("{0}")]
     Other(String),
