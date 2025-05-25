@@ -13,7 +13,7 @@ use crate::models::{ImpliedVolatility, OptionQuote, SurfaceUpdate};
 use minifb::{Key, Window, WindowOptions};
 use plotters::prelude::*;
 
-
+use ndarray;
 /// Global broadcast channel for surface updates
 pub static SURFACE_BUS: Lazy<broadcast::Sender<SurfaceUpdate>> = Lazy::new(|| {
     let (tx, _rx) = broadcast::channel(32);
@@ -54,7 +54,6 @@ impl VolatilitySurfaceVisualizer {
             if let Some(update) = self.latest.clone() {
                 self.draw_heatmap(&update)?;
             }
-
             self.window
                 .update_with_buffer(&self.buffer, self.width, self.height)
                 .map_err(|e| OptionsError::Other(format!("Window update: {}", e)))?;
