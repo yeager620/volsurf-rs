@@ -1,11 +1,12 @@
 use chrono::{DateTime, Utc};
 use eframe::egui;
+use egui::plot::{Line, Plot, PlotPoints};
 use options_rs::api::{RestClient, WebSocketClient};
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
 use options_rs::models::volatility::{ImpliedVolatility, VolatilitySurface};
 use options_rs::models::{OptionContract, OptionQuote, OptionType};
-use options_rs::utils::{plot_volatility_smile_in_memory, plot_volatility_surface_in_memory};
+
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,14 +14,8 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::{sleep, Duration};
 use tracing::{debug, info, warn};
 
-struct PlotImages {
-    surface: Option<egui::TextureHandle>,
-    smile: Option<egui::TextureHandle>,
-}
-
 struct PlotData {
-    surface_img: egui::ColorImage,
-    smile_img: Option<egui::ColorImage>,
+    surface: VolatilitySurface,
 }
 
 struct VolatilitySurfaceApp {
@@ -28,7 +23,8 @@ struct VolatilitySurfaceApp {
     status: String,
     ticker_sender: mpsc::Sender<(String, DataSource)>,
     plot_receiver: mpsc::Receiver<PlotData>,
-    plots: PlotImages,
+    surface: Option<VolatilitySurface>,
+    selected_expiration: usize,
     data_source: DataSource,
 }
 
@@ -42,13 +38,8 @@ impl eframe::App for VolatilitySurfaceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while let Ok(plot_data) = self.plot_receiver.try_recv() {
             self.status = "Received new plot data".to_string();
-            let surface_texture =
-                load_texture_from_png(ctx, plot_data.surface_img, "surface_texture");
-            self.plots.surface = Some(surface_texture);
-            if let Some(smile_img) = plot_data.smile_img {
-                let smile_texture = load_texture_from_png(ctx, smile_img, "smile_texture");
-                self.plots.smile = Some(smile_texture);
-            }
+            self.surface = Some(plot_data.surface);
+            self.selected_expiration = 0;
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -99,37 +90,50 @@ impl eframe::App for VolatilitySurfaceApp {
             ui.label(&self.status);
             ui.separator();
 
-            if self.plots.surface.is_some() || self.plots.smile.is_some() {
+            if let Some(ref surface) = self.surface {
                 _frame.set_window_size(egui::vec2(1000.0, 700.0));
 
-                ui.columns(2, |columns| {
-                    if let Some(ref surface) = self.plots.surface {
-                        columns[0].heading("Volatility Surface");
-                        columns[0].image(surface, egui::vec2(480.0, 360.0));
-                    } else {
-                        columns[0].label("Volatility Surface: Waiting for data...");
-                    }
-                    if let Some(ref smile) = self.plots.smile {
-                        columns[1].heading("Volatility Smile");
-                        columns[1].image(smile, egui::vec2(480.0, 360.0));
-                    } else {
-                        columns[1].label("Volatility Smile: Waiting for data...");
-                    }
+                ui.horizontal(|ui| {
+                    ui.label("Expiration:");
+                    egui::ComboBox::from_id_source("expiry_select")
+                        .selected_text(surface.expirations[self.selected_expiration].format("%Y-%m-%d").to_string())
+                        .show_ui(ui, |ui| {
+                            for (i, exp) in surface.expirations.iter().enumerate() {
+                                ui.selectable_value(
+                                    &mut self.selected_expiration,
+                                    i,
+                                    exp.format("%Y-%m-%d").to_string(),
+                                );
+                            }
+                        });
                 });
+
+                if let Ok((strikes, vols)) =
+                    surface.slice_by_expiration(surface.expirations[self.selected_expiration])
+                {
+                    let points: Vec<[f64; 2]> = strikes
+                        .iter()
+                        .zip(vols.iter())
+                        .map(|(s, v)| [*s, *v])
+                        .collect();
+                    let line = Line::new(PlotPoints::from(points));
+
+                    Plot::new("vol_smile_plot")
+                        .height(400.0)
+                        .width(900.0)
+                        .label_formatter(|_, _| String::new())
+                        .show(ui, |plot_ui| {
+                            plot_ui.line(line);
+                        });
+                } else {
+                    ui.label("Failed to extract smile data");
+                }
             } else {
                 ui.label("Waiting for plot data...");
                 ui.label("Press Ctrl+C in the terminal to exit the application.");
             }
         });
     }
-}
-
-fn load_texture_from_png(
-    ctx: &egui::Context,
-    image_data: egui::ColorImage,
-    texture_id: &str,
-) -> egui::TextureHandle {
-    ctx.load_texture(texture_id, image_data, egui::TextureOptions::default())
 }
 
 pub fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
@@ -789,45 +793,9 @@ async fn run_volatility_surface_plot(
                 let current_version = surface.get_version();
                 let time_since_update = last_update_time.elapsed();
 
-                if current_version > last_surface_version || time_since_update > max_update_interval
-                {
-                    let surface_img = match plot_volatility_surface_in_memory(surface) {
-                        Ok(img) => img,
-                        Err(e) => {
-                            warn!("Failed to generate vol surface plot: {}", e);
-                            continue;
-                        }
-                    };
-
-                    let mut smile_img_opt = None;
-
-                    if !surface.expirations.is_empty() {
-                        let expiration = surface.expirations[0];
-                        match surface.slice_by_expiration(expiration) {
-                            Ok((strikes, vols)) => {
-                                match plot_volatility_smile_in_memory(
-                                    &strikes,
-                                    &vols,
-                                    &symbol_clone,
-                                    &expiration,
-                                ) {
-                                    Ok(img) => {
-                                        smile_img_opt = Some(img);
-                                    }
-                                    Err(e) => {
-                                        warn!("Failed to generate vol smile plot: {}", e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Failed to slice volatility surface: {}", e);
-                            }
-                        }
-                    }
-
+                if current_version > last_surface_version || time_since_update > max_update_interval {
                     let plot_data = PlotData {
-                        surface_img,
-                        smile_img: smile_img_opt,
+                        surface: surface.clone(),
                     };
 
                     if let Err(e) = plot_sender_clone.try_send(plot_data) {
@@ -901,10 +869,8 @@ async fn main() -> Result<()> {
         status: "Enter a ticker symbol and click 'Plot Volatility Surface'".to_string(),
         ticker_sender,
         plot_receiver,
-        plots: PlotImages {
-            surface: None,
-            smile: None,
-        },
+        surface: None,
+        selected_expiration: 0,
         data_source: DataSource::MostRecentOptionsChain, // Default to most recent options chain
     };
 
