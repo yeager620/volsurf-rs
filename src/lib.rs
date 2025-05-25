@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod models;
 pub mod utils;
+pub mod webapp;
 
 // Re-export commonly used types
 pub use api::{RestClient, WebSocketClient};
