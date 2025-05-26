@@ -57,36 +57,43 @@ impl Config {
             .map(|v| v.to_lowercase() == "true")
             .unwrap_or(default_paper_trading);
 
-        // Prefer sandbox credentials if provided
-        let etrade_consumer_key = env::var("ETRADE_SANDBOX_CONSUMER_KEY")
+        // Prefer production credentials if provided, fallback to sandbox
+        let etrade_consumer_key = env::var("ETRADE_PROD_CONSUMER_KEY")
+            .or_else(|_| env::var("ETRADE_SANDBOX_CONSUMER_KEY"))
             .or_else(|_| env::var("ETRADE_CONSUMER_KEY"))
             .map_err(|_| {
                 OptionsError::ConfigError(
-                    "ETRADE_SANDBOX_CONSUMER_KEY environment variable not set".to_string(),
+                    "ETRADE_PROD_CONSUMER_KEY or ETRADE_SANDBOX_CONSUMER_KEY environment variable not set".to_string(),
                 )
             })?;
-        let etrade_consumer_secret = env::var("ETRADE_SANDBOX_CONSUMER_SECRET")
+        let etrade_consumer_secret = env::var("ETRADE_PROD_CONSUMER_SECRET")
+            .or_else(|_| env::var("ETRADE_SANDBOX_CONSUMER_SECRET"))
             .or_else(|_| env::var("ETRADE_CONSUMER_SECRET"))
             .map_err(|_| {
                 OptionsError::ConfigError(
-                    "ETRADE_SANDBOX_CONSUMER_SECRET environment variable not set".to_string(),
+                    "ETRADE_PROD_CONSUMER_SECRET or ETRADE_SANDBOX_CONSUMER_SECRET environment variable not set".to_string(),
                 )
             })?;
-        let etrade_access_token = env::var("ETRADE_SANDBOX_ACCESS_TOKEN")
+        // Make access token and secret optional, defaulting to empty strings
+        let etrade_access_token = env::var("ETRADE_PROD_ACCESS_TOKEN")
+            .or_else(|_| env::var("ETRADE_SANDBOX_ACCESS_TOKEN"))
             .or_else(|_| env::var("ETRADE_ACCESS_TOKEN"))
-            .map_err(|_| {
-                OptionsError::ConfigError(
-                    "ETRADE_SANDBOX_ACCESS_TOKEN environment variable not set".to_string(),
-                )
-            })?;
-        let etrade_access_secret = env::var("ETRADE_SANDBOX_ACCESS_SECRET")
+            .unwrap_or_default();
+        let etrade_access_secret = env::var("ETRADE_PROD_ACCESS_SECRET")
+            .or_else(|_| env::var("ETRADE_SANDBOX_ACCESS_SECRET"))
             .or_else(|_| env::var("ETRADE_ACCESS_SECRET"))
-            .map_err(|_| {
-                OptionsError::ConfigError(
-                    "ETRADE_SANDBOX_ACCESS_SECRET environment variable not set".to_string(),
-                )
-            })?;
-        let etrade_sandbox = true;
+            .unwrap_or_default();
+
+        // Determine if we should use sandbox based on environment variable or fallback logic
+        // Check for explicit ETRADE_SANDBOX environment variable first
+        let etrade_sandbox = env::var("ETRADE_SANDBOX")
+            .map(|v| v.to_lowercase() == "true")
+            .unwrap_or_else(|_| {
+                // If not explicitly set, determine based on which credentials were loaded
+                // If we successfully loaded ETRADE_PROD_CONSUMER_KEY, use production mode
+                // Otherwise, default to sandbox mode
+                !env::var("ETRADE_PROD_CONSUMER_KEY").is_ok()
+            });
 
         Ok(Config {
             alpaca: AlpacaConfig {

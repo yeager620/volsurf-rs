@@ -108,11 +108,13 @@ impl Subscribe {
         self
     }
 
+    #[allow(dead_code)]
     fn option_trades(mut self, symbols: Vec<String>) -> Self {
         self.trades = Some(symbols);
         self
     }
 
+    #[allow(dead_code)]
     fn option_bars(mut self, symbols: Vec<String>) -> Self {
         self.bars = Some(symbols);
         self

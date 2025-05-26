@@ -4,7 +4,7 @@ use options_rs::api::ETradeClient;
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
 use options_rs::models::volatility::VolatilitySurface;
-use options_rs::models::{OptionContract, OptionQuote};
+use options_rs::models::OptionContract;
 use options_rs::utils::polars_utils;
 
 use serde_json::Value;
@@ -276,7 +276,7 @@ async fn run_volatility_surface_plot(
     let under_quotes = etrade_client.quotes(&[symbol]).await?;
     let mut underlying_price = 0.0;
     if let Some(q) = under_quotes.first() {
-        underlying_price = q.lastTrade.or(q.bid).unwrap_or(0.0);
+        underlying_price = q.last_trade.or(q.bid).unwrap_or(0.0);
     }
     for q in &mut quotes {
         q.underlying_price = underlying_price;
@@ -286,7 +286,7 @@ async fn run_volatility_surface_plot(
     info!("Processing {} option quotes with Polars", quotes.len());
 
     // Convert quotes to DataFrame for analysis
-    let quotes_df = match polars_utils::quotes_to_dataframe(&quotes) {
+    let _quotes_df = match polars_utils::quotes_to_dataframe(&quotes) {
         Ok(df) => {
             info!("Created DataFrame with {} rows", df.height());
             df
@@ -359,7 +359,7 @@ async fn main() -> Result<()> {
     }
 
     info!("Starting GUI for ticker input");
-    let plotting_task = tokio::spawn(async move {
+    let _plotting_task = tokio::spawn(async move {
         while let Some((ticker, data_source)) = ticker_receiver.recv().await {
             info!(
                 "Received ticker from GUI: {} with data source: {:?}",

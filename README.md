@@ -5,7 +5,7 @@ A Rust library for options pricing, volatility surface calculations, and market 
 ## Features
 
 - Low-latency Alpaca Markets API client for options data
-- OAuth-signed E*TRADE REST client for option chains and quotes (sandbox by default)
+- OAuth-signed E*TRADE REST client for option chains and quotes (production by default)
 - Options pricing and implied volatility calculations
 - Volatility surface construction and visualization
 - High-performance data processing with Polars
@@ -120,4 +120,26 @@ Using Polars provides significant performance improvements:
 4. **Caching**: Both in-memory and on-disk caching reduce redundant computations.
 5. **Query Optimization**: The Lazy API optimizes query plans for maximum efficiency.
 
-For large datasets or computation-intensive operations like volatility surface calculation, you can expect 5×–10× speedups compared to row-by-row processing.\n### E*TRADE Sandbox Configuration\nSet the following environment variables:\n- `ETRADE_SANDBOX_CONSUMER_KEY`\n- `ETRADE_SANDBOX_CONSUMER_SECRET`\n- `ETRADE_SANDBOX_ACCESS_TOKEN`\n- `ETRADE_SANDBOX_ACCESS_SECRET`\n
+For large datasets or computation-intensive operations like volatility surface calculation, you can expect 5×–10× speedups compared to row-by-row processing.
+
+### E*TRADE Configuration
+The library supports both production and sandbox E*TRADE environments. You can explicitly control which environment to use with the `ETRADE_SANDBOX` environment variable.
+
+#### Environment Selection
+- `ETRADE_SANDBOX=true` - Use sandbox environment
+- `ETRADE_SANDBOX=false` - Use production environment
+- If not set, the library will use production mode if `ETRADE_PROD_CONSUMER_KEY` is available, otherwise sandbox mode
+
+#### Production Environment
+Set the following environment variables for production use:
+- `ETRADE_PROD_CONSUMER_KEY`
+- `ETRADE_PROD_CONSUMER_SECRET`
+- `ETRADE_PROD_ACCESS_TOKEN` (optional)
+- `ETRADE_PROD_ACCESS_SECRET` (optional)
+
+#### Sandbox Environment
+Set the following environment variables for sandbox use:
+- `ETRADE_SANDBOX_CONSUMER_KEY`
+- `ETRADE_SANDBOX_CONSUMER_SECRET`
+- `ETRADE_SANDBOX_ACCESS_TOKEN` (optional)
+- `ETRADE_SANDBOX_ACCESS_SECRET` (optional)
