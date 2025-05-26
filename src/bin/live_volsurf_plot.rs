@@ -289,8 +289,9 @@ async fn run_volatility_surface_plot(
     use chrono::NaiveDate;
 
     let mut by_exp: HashMap<NaiveDate, Vec<String>> = HashMap::new();
-    for (occ, snap) in &chain_resp.snapshots {
-        if let Ok(exp) = NaiveDate::parse_from_str(&snap.expiration_date, "%Y-%m-%d") {
+    for occ in chain_resp.snapshots.keys() {
+        if let Some(contract) = OptionContract::from_occ_symbol(occ) {
+            let exp = contract.expiration.date_naive();
             by_exp.entry(exp).or_default().push(occ.clone());
         }
     }
