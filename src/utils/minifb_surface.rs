@@ -241,7 +241,7 @@ impl SurfaceBuilder {
     }
 
     fn on_quote(&mut self, q: OptionQuote) -> Result<Option<SurfaceUpdate>> {
-        let iv = ImpliedVolatility::from_quote(&q, 0.03)?.value;
+        let iv = ImpliedVolatility::from_quote(&q, 0.03, 0.0)?.value;
         let strike_key = (q.contract.strike * 100.0).round() as i64;
         let key = (strike_key, q.contract.expiration.date_naive());
         self.grid.insert(key, iv);

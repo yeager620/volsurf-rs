@@ -390,13 +390,13 @@ pub fn calculate_volatility_surface_with_polars(
 
     // Filter for valid quotes (non-zero bid and ask)
     let filtered_lf = lf
-        .filter(
-            col("bid").gt(lit(0.0))
-            .and(col("ask").gt(lit(0.0)))
-        )
+        .filter(col("bid").gt(lit(0.0)).and(col("ask").gt(lit(0.0))))
         .with_columns([
-            ((col("bid") + col("ask")) / lit(2.0)).alias("mid_price")
-        ]);
+            ((col("bid") + col("ask")) / lit(2.0)).alias("mid_price"),
+            ((col("ask") - col("bid")) / col("mid_price")).alias("spread_pct"),
+        ])
+        .filter(col("spread_pct").lt(lit(0.05)))
+        .filter(col("volume").gt_eq(lit(10i64)).and(col("open_interest").gt_eq(lit(10i64))));
 
     // Materialize the filtered DataFrame
     let filtered_df = filtered_lf
@@ -409,7 +409,7 @@ pub fn calculate_volatility_surface_with_polars(
     // Calculate implied volatilities
     let mut ivs = Vec::new();
     for q in &filtered_quotes {
-        if let Ok(iv) = ImpliedVolatility::from_quote(q, risk_free_rate) {
+        if let Ok(iv) = ImpliedVolatility::from_quote(q, risk_free_rate, 0.0) {
             ivs.push(iv);
         }
     }
