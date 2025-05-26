@@ -262,32 +262,67 @@ async fn run_volatility_surface_plot(
     let config = Config::from_env()?;
     let rest_client = RestClient::new(config.alpaca.clone());
 
-    info!("Fetching option chain snapshots for {}", symbol);
-    let snapshots = rest_client
-        .get_option_chain_snapshots(
+    info!("Fetching option contracts for {}", symbol);
+    let contracts_resp = rest_client
+        .get_options_chain(
             symbol,
-            Some("indicative"),
-            Some(500),
             None,
             None,
             None,
             None,
             None,
-            None,
-            None,
-            None,
+            Some(10000),
             None,
         )
         .await?;
 
-    if snapshots.snapshots.is_empty() {
-        warn!("No snapshots returned for symbol {}", symbol);
+    if contracts_resp.results.is_empty() {
+        warn!("No contracts returned for symbol {}", symbol);
         return Ok(());
     }
 
+    use std::collections::HashMap;
+    use chrono::NaiveDate;
+
+    let mut by_exp: HashMap<NaiveDate, Vec<String>> = HashMap::new();
+    for c in &contracts_resp.results {
+        if let Ok(exp) = NaiveDate::parse_from_str(&c.expiration_date, "%Y-%m-%d") {
+            by_exp.entry(exp).or_default().push(c.symbol.clone());
+        }
+    }
+
+    let Some((&chosen_expiry, symbols_vec)) = by_exp.iter().min_by_key(|(d, _)| *d) else {
+        warn!("No expirations found for symbol {}", symbol);
+        return Ok(());
+    };
+
+    let symbol_list: Vec<&str> = symbols_vec.iter().map(String::as_str).collect();
+
+    let snap_resp = rest_client
+        .get_option_snapshots(&symbol_list, None, None, None, None)
+        .await?;
+
+    let spot_json = rest_client.get_stock_snapshot(symbol).await?;
+    let mut underlying_price = 0.0;
+    if let Some(val) = spot_json.get(symbol) {
+        underlying_price = val
+            .get("dailyBar")
+            .and_then(|v| v.get("c"))
+            .and_then(|v| v.as_f64())
+            .or_else(|| {
+                val.get("latestTrade")
+                    .and_then(|v| v.get("p"))
+                    .and_then(|v| v.as_f64())
+            })
+            .unwrap_or(0.0);
+    }
+
     let mut quotes = Vec::new();
-    for (occ, snap) in snapshots.snapshots {
+    for (occ, snap) in snap_resp.snapshots {
         if let Some(contract) = OptionContract::from_occ_symbol(&occ) {
+            if contract.expiration.date_naive() != chosen_expiry {
+                continue;
+            }
             let mut bid: Option<f64> = None;
             let mut ask: Option<f64> = None;
             let mut last_price: Option<f64> = None;
@@ -308,18 +343,14 @@ async fn run_volatility_surface_plot(
                 }
             }
 
-            if bid.is_none() || ask.is_none() {
-                if let Some(bar) = snap.dailyBar.as_ref().or(snap.minuteBar.as_ref()) {
-                    if bid.is_none() {
-                        bid = Some(bar.c * 0.99);
-                    }
-                    if ask.is_none() {
-                        ask = Some(bar.c * 1.01);
-                    }
-                    if timestamp.is_none() {
-                        timestamp = Some(bar.t);
-                    }
+            if bid.is_some() && ask.is_some() {
+                let spread = ask.unwrap() - bid.unwrap();
+                let mid = (ask.unwrap() + bid.unwrap()) / 2.0;
+                if mid <= 0.0 || spread / mid > 0.05 {
+                    continue;
                 }
+            } else {
+                continue;
             }
 
             if last_price.is_none() {
@@ -330,6 +361,9 @@ async fn run_volatility_surface_plot(
                     .or(snap.prevDailyBar.as_ref())
                 {
                     last_price = Some(bar.c);
+                    if timestamp.is_none() {
+                        timestamp = Some(bar.t);
+                    }
                 }
             }
 
@@ -340,11 +374,6 @@ async fn run_volatility_surface_plot(
             if let (Some(bid), Some(ask), Some(last_price), Some(timestamp)) =
                 (bid, ask, last_price, timestamp)
             {
-                let underlying_price = if contract.is_call() {
-                    contract.strike + ask - bid
-                } else {
-                    contract.strike - ask + bid
-                };
                 quotes.push(OptionQuote {
                     contract,
                     bid,

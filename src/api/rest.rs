@@ -567,4 +567,25 @@ impl RestClient {
 
         Ok(data)
     }
+
+    /// Get latest stock snapshot for a symbol
+    pub async fn get_stock_snapshot(&self, symbol: &str) -> Result<serde_json::Value> {
+        let url = format!(
+            "{}/v2/stocks/snapshots?symbols={}",
+            self.config.data_url, symbol
+        );
+
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| OptionsError::Other(format!("Failed to get stock snapshot: {}", e)))?;
+
+        let data = resp
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| OptionsError::ParseError(format!("Failed to parse stock snapshot: {}", e)))?;
+
+        Ok(data)
+    }
 }

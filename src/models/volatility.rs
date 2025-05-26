@@ -17,7 +17,11 @@ pub struct ImpliedVolatility {
 }
 
 impl ImpliedVolatility {
-    pub fn from_quote(quote: &OptionQuote, risk_free_rate: f64) -> Result<Self> {
+    pub fn from_quote(
+        quote: &OptionQuote,
+        risk_free_rate: f64,
+        dividend_yield: f64,
+    ) -> Result<Self> {
         let contract = &quote.contract;
         let option_price = quote.mid_price();
         let underlying_price = quote.underlying_price;
@@ -43,7 +47,7 @@ impl ImpliedVolatility {
             underlying_price,
             strike,
             time_to_expiration,
-            risk_free_rate,
+            risk_free_rate - dividend_yield,
             is_call,
         )
         .map_err(|e| {
@@ -54,7 +58,7 @@ impl ImpliedVolatility {
             underlying_price,
             strike,
             time_to_expiration,
-            risk_free_rate,
+            risk_free_rate - dividend_yield,
             iv,
             is_call,
         );
@@ -63,7 +67,7 @@ impl ImpliedVolatility {
             underlying_price,
             strike,
             time_to_expiration,
-            risk_free_rate,
+            risk_free_rate - dividend_yield,
             iv,
         );
 
