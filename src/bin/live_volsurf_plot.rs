@@ -262,22 +262,26 @@ async fn run_volatility_surface_plot(
     let config = Config::from_env()?;
     let rest_client = RestClient::new(config.alpaca.clone());
 
-    info!("Fetching option contracts for {}", symbol);
-    let contracts_resp = rest_client
-        .get_options_chain(
+    info!("Fetching option chain snapshots for {}", symbol);
+    let chain_resp = rest_client
+        .get_option_chain_snapshots(
             symbol,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(10000),
-            None,
+            Some("indicative"), // feed
+            Some(1000),         // limit
+            None,               // updated_since
+            None,               // page_token
+            None,               // option_type
+            None,               // strike_price_gte
+            None,               // strike_price_lte
+            None,               // expiration_date
+            None,               // expiration_date_gte
+            None,               // expiration_date_lte
+            None,               // root_symbol
         )
         .await?;
 
-    if contracts_resp.results.is_empty() {
-        warn!("No contracts returned for symbol {}", symbol);
+    if chain_resp.snapshots.is_empty() {
+        warn!("No option snapshots returned for symbol {}", symbol);
         return Ok(());
     }
 
@@ -285,9 +289,10 @@ async fn run_volatility_surface_plot(
     use chrono::NaiveDate;
 
     let mut by_exp: HashMap<NaiveDate, Vec<String>> = HashMap::new();
-    for c in &contracts_resp.results {
-        if let Ok(exp) = NaiveDate::parse_from_str(&c.expiration_date, "%Y-%m-%d") {
-            by_exp.entry(exp).or_default().push(c.symbol.clone());
+    for occ in chain_resp.snapshots.keys() {
+        if let Some(contract) = OptionContract::from_occ_symbol(occ) {
+            let exp = contract.expiration.date_naive();
+            by_exp.entry(exp).or_default().push(occ.clone());
         }
     }
 
@@ -299,7 +304,7 @@ async fn run_volatility_surface_plot(
     let symbol_list: Vec<&str> = symbols_vec.iter().map(String::as_str).collect();
 
     let snap_resp = rest_client
-        .get_option_snapshots(&symbol_list, None, None, None, None)
+        .get_option_snapshots(&symbol_list, Some("indicative"), None, None, None)
         .await?;
 
     let spot_json = rest_client.get_stock_snapshot(symbol).await?;
