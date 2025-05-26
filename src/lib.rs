@@ -4,6 +4,6 @@ pub mod error;
 pub mod models;
 pub mod utils;
 
-pub use api::{RestClient, WebSocketClient};
+pub use api::{ETradeClient, RestClient, WebSocketClient};
 pub use config::Config;
 pub use error::{OptionsError, Result};

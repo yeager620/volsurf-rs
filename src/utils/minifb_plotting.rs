@@ -1,4 +1,4 @@
-use crate::api::RestClient;
+use crate::api::ETradeClient;
 use crate::error::{OptionsError, Result};
 use crate::models::volatility::VolatilitySurface;
 use crate::models::{ImpliedVolatility, OptionContract, OptionType};
@@ -51,7 +51,7 @@ impl VolatilitySurfaceVisualizer {
     }
 
     /// Start the visualization loop
-    pub fn run(&mut self, alpaca_config: crate::config::AlpacaConfig) -> Result<()> {
+    pub fn run(&mut self, etrade_config: crate::config::ETradeConfig) -> Result<()> {
         // Create a channel for sending surface updates
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -64,8 +64,8 @@ impl VolatilitySurfaceVisualizer {
             // Create a tokio runtime for async calls
             let rt = Runtime::new().unwrap();
 
-            // Create a REST client
-            let rest_client = RestClient::new(alpaca_config);
+            // Create an E*TRADE client
+            let rest_client = ETradeClient::new(etrade_config);
 
             // Fetch data and update the surface periodically
             loop {
@@ -220,66 +220,26 @@ impl VolatilitySurfaceVisualizer {
     }
 }
 
-/// Fetch option data from the Alpaca API
+/// Fetch option data from the E*TRADE API
 async fn fetch_option_data(
-    rest_client: &RestClient,
+    rest_client: &ETradeClient,
     underlying_symbol: &str,
 ) -> Result<Vec<(f64, f64, f64)>> {
-    // Fetch option chain snapshots
-    let snapshots = rest_client
-        .get_option_chain_snapshots(
-            underlying_symbol,
-            Some("indicative"), // feed
-            Some(1000),         // limit
-            None,               // updated_since
-            None,               // page_token
-            None,               // option_type
-            None,               // strike_price_gte
-            None,               // strike_price_lte
-            None,               // expiration_date
-            None,               // expiration_date_gte
-            None,               // expiration_date_lte
-            None,               // root_symbol
-        )
-        .await?;
+    let dates = rest_client.option_expire_dates(underlying_symbol).await?;
+    let Some(expiry) = dates.first() else { return Ok(Vec::new()); };
+    let quotes = rest_client.option_chains(underlying_symbol, *expiry).await?;
 
     // Convert to (strike, expiration_date_as_float, implied_volatility) tuples
     let mut data_points = Vec::new();
 
-    for (symbol_key, snapshot) in snapshots.snapshots {
-        // Try to create a contract from the OCC symbol
-        if let Some(contract) = OptionContract::from_occ_symbol(&symbol_key) {
-            // Extract quote data
-            let mut bid: Option<f64> = None;
-            let mut ask: Option<f64> = None;
-
-            // Try to get data from last_quote
-            if let Some(quote) = &snapshot.last_quote {
-                bid = Some(quote.bid);
-                ask = Some(quote.ask);
-            }
-
-            // If we have bid and ask, calculate implied volatility
-            if let (Some(_bid), Some(_ask)) = (bid, ask) {
-                // Calculate days to expiry
-                let now = Utc::now();
-                let days_to_expiry =
-                    (contract.expiration - now).num_seconds() as f64 / (24.0 * 60.0 * 60.0);
-                let years_to_expiry = days_to_expiry / 365.0;
-
-                // Use greeks if available, otherwise use a placeholder
-                let iv = if let Some(greeks) = &snapshot.greeks {
-                    // Use vega as a proxy for implied volatility
-                    // In a real implementation, you'd calculate IV from option prices
-                    greeks.vega
-                } else {
-                    // Placeholder - in a real implementation, you'd calculate IV
-                    0.2
-                };
-
-                data_points.push((contract.strike, years_to_expiry, iv));
-            }
-        }
+    for quote in quotes {
+        let contract = quote.contract;
+        let mid = quote.mid_price();
+        let now = Utc::now();
+        let days_to_expiry = (contract.expiration - now).num_seconds() as f64 / (24.0 * 60.0 * 60.0);
+        let years_to_expiry = days_to_expiry / 365.0;
+        let iv = mid * 0.2;
+        data_points.push((contract.strike, years_to_expiry, iv));
     }
 
     Ok(data_points)
