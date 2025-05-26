@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use crate::api::{RestClient, WebSocketClient};
+use crate::api::RestClient;
 use crate::config::AlpacaConfig;
 use crate::error::{OptionsError, Result};
 use crate::models::{ImpliedVolatility, OptionContract, OptionQuote, SurfaceUpdate};

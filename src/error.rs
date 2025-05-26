@@ -2,6 +2,7 @@ use image::error::ImageError;
 use plotters::drawing::DrawingAreaErrorKind;
 use plotters_bitmap::BitMapBackendError;
 use thiserror::Error;
+use polars::prelude::PolarsError;
 
 #[derive(Error, Debug)]
 pub enum OptionsError {
@@ -28,6 +29,9 @@ pub enum OptionsError {
 
     #[error("Drawing error: {0}")]
     DrawingError(#[from] DrawingAreaErrorKind<BitMapBackendError>),
+
+    #[error("Polars error: {0}")]
+    PolarsError(#[from] PolarsError),
 
     #[error("{0}")]
     Other(String),

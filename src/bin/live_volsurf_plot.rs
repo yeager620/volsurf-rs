@@ -3,12 +3,14 @@ use egui::plot::{Line, Plot, PlotPoints, Points};
 use options_rs::api::RestClient;
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
-use options_rs::models::volatility::{ImpliedVolatility, VolatilitySurface};
+use options_rs::models::volatility::VolatilitySurface;
 use options_rs::models::{OptionContract, OptionQuote};
+use options_rs::utils::polars_utils;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+use std::path::Path;
 
 struct PlotData {
     surface: VolatilitySurface,
@@ -92,7 +94,11 @@ impl eframe::App for VolatilitySurfaceApp {
                 ui.horizontal(|ui| {
                     ui.label("Expiration:");
                     egui::ComboBox::from_id_source("expiry_select")
-                        .selected_text(surface.expirations[self.selected_expiration].format("%Y-%m-%d").to_string())
+                        .selected_text(
+                            surface.expirations[self.selected_expiration]
+                                .format("%Y-%m-%d")
+                                .to_string(),
+                        )
                         .show_ui(ui, |ui| {
                             for (i, exp) in surface.expirations.iter().enumerate() {
                                 ui.selectable_value(
@@ -109,8 +115,11 @@ impl eframe::App for VolatilitySurfaceApp {
                 {
                     let strike_vec: Vec<f64> = strikes.iter().cloned().collect();
                     let vol_vec: Vec<f64> = vols.iter().cloned().collect();
-                    let scatter_points: Vec<[f64; 2]> =
-                        strike_vec.iter().zip(vol_vec.iter()).map(|(s, v)| [*s, *v]).collect();
+                    let scatter_points: Vec<[f64; 2]> = strike_vec
+                        .iter()
+                        .zip(vol_vec.iter())
+                        .map(|(s, v)| [*s, *v])
+                        .collect();
                     let spline_points = cubic_hermite_spline(&strike_vec, &vol_vec, 10);
                     let line = Line::new(PlotPoints::from(spline_points));
                     let scatter = Points::new(PlotPoints::from(scatter_points));
@@ -169,7 +178,7 @@ pub fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
 fn cubic_hermite_spline(x: &[f64], y: &[f64], steps: usize) -> Vec<[f64; 2]> {
     let n = x.len();
     if n < 2 {
-        return x.iter().zip(y.iter()).map(|(&a,&b)| [a,b]).collect();
+        return x.iter().zip(y.iter()).map(|(&a, &b)| [a, b]).collect();
     }
     let mut m = vec![0.0; n];
     for i in 0..n {
@@ -209,6 +218,45 @@ async fn run_volatility_surface_plot(
         return Err(OptionsError::Other(
             "Live update source is not implemented in this example".to_string(),
         ));
+    }
+
+    // Check if we have a cached volatility surface for this symbol
+    let cache_dir = "cache";
+    let cache_file = format!("{}/vol_surface_{}.parquet", cache_dir, symbol);
+
+    // Try to load from cache first if the file exists
+    if Path::new(&cache_file).exists() {
+        info!("Found cached volatility surface for {}", symbol);
+        match polars_utils::load_dataframe_from_parquet(&cache_file) {
+            Ok(df) => {
+                info!("Loaded volatility surface from cache");
+                match polars_utils::dataframe_to_volatility_surface(&df, symbol) {
+                    Ok(surface) => {
+                        // Check if the cache is recent (less than 1 hour old)
+                        let now = chrono::Utc::now();
+                        let cache_age = now.signed_duration_since(surface.timestamp);
+                        if cache_age.num_minutes() < 60 {
+                            info!("Using cached volatility surface (age: {} minutes)", cache_age.num_minutes());
+                            let plot_data = PlotData { surface };
+                            plot_sender
+                                .send(plot_data)
+                                .await
+                                .map_err(|e| OptionsError::Other(e.to_string()))?;
+                            return Ok(());
+                        } else {
+                            info!("Cached volatility surface is too old ({} minutes), fetching fresh data", 
+                                  cache_age.num_minutes());
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to convert cached DataFrame to volatility surface: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to load cached volatility surface: {}", e);
+            }
+        }
     }
 
     let config = Config::from_env()?;
@@ -261,11 +309,7 @@ async fn run_volatility_surface_plot(
             }
 
             if bid.is_none() || ask.is_none() {
-                if let Some(bar) = snap
-                    .dailyBar
-                    .as_ref()
-                    .or(snap.minuteBar.as_ref())
-                {
+                if let Some(bar) = snap.dailyBar.as_ref().or(snap.minuteBar.as_ref()) {
                     if bid.is_none() {
                         bid = Some(bar.c * 0.99);
                     }
@@ -315,20 +359,52 @@ async fn run_volatility_surface_plot(
         }
     }
 
+    // Use Polars for efficient processing
+    info!("Processing {} option quotes with Polars", quotes.len());
+
+    // Convert quotes to DataFrame for analysis
+    let quotes_df = match polars_utils::quotes_to_dataframe(&quotes) {
+        Ok(df) => {
+            info!("Created DataFrame with {} rows", df.height());
+            df
+        },
+        Err(e) => {
+            warn!("Failed to create DataFrame from quotes: {}", e);
+            return Err(e);
+        }
+    };
+
+    // Calculate volatility surface using Polars
     let risk_free_rate = 0.03;
-    let mut ivs = Vec::new();
-    for q in quotes {
-        if let Ok(iv) = ImpliedVolatility::from_quote(&q, risk_free_rate) {
-            ivs.push(iv);
+    let surface = match polars_utils::calculate_volatility_surface_with_polars(&quotes, symbol, risk_free_rate) {
+        Ok(surface) => {
+            info!("Calculated volatility surface with {} expirations and {} strikes", 
+                  surface.expirations.len(), surface.strikes.len());
+            surface
+        },
+        Err(e) => {
+            warn!("Failed to calculate volatility surface: {}", e);
+            return Err(e);
+        }
+    };
+
+    // Cache the volatility surface for future use
+    if let Ok(surface_df) = polars_utils::volatility_surface_to_dataframe(&surface) {
+        // Create cache directory if it doesn't exist
+        if !Path::new(cache_dir).exists() {
+            if let Err(e) = std::fs::create_dir_all(cache_dir) {
+                warn!("Failed to create cache directory: {}", e);
+            }
+        }
+
+        // Save to Parquet file
+        if let Err(e) = polars_utils::cache_dataframe_to_parquet(&surface_df, &cache_file) {
+            warn!("Failed to cache volatility surface: {}", e);
+        } else {
+            info!("Cached volatility surface to {}", cache_file);
         }
     }
 
-    if ivs.is_empty() {
-        warn!("No implied volatilities calculated for {}", symbol);
-        return Ok(());
-    }
-
-    let surface = VolatilitySurface::new(symbol.to_string(), &ivs)?;
     let plot_data = PlotData { surface };
     plot_sender
         .send(plot_data)
