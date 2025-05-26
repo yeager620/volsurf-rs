@@ -1,10 +1,11 @@
 # Options-RS
 
-A Rust library for options pricing, volatility surface calculations, and market data processing using Alpaca Markets API.
+A Rust library for options pricing, volatility surface calculations, and market data processing. It now includes an E*TRADE API client for option chains in addition to the Alpaca integration.
 
 ## Features
 
 - Low-latency Alpaca Markets API client for options data
+- OAuth-signed E*TRADE REST client for option chains and quotes (sandbox by default)
 - Options pricing and implied volatility calculations
 - Volatility surface construction and visualization
 - High-performance data processing with Polars
@@ -119,4 +120,4 @@ Using Polars provides significant performance improvements:
 4. **Caching**: Both in-memory and on-disk caching reduce redundant computations.
 5. **Query Optimization**: The Lazy API optimizes query plans for maximum efficiency.
 
-For large datasets or computation-intensive operations like volatility surface calculation, you can expect 5×–10× speedups compared to row-by-row processing.
+For large datasets or computation-intensive operations like volatility surface calculation, you can expect 5×–10× speedups compared to row-by-row processing.\n### E*TRADE Sandbox Configuration\nSet the following environment variables:\n- `ETRADE_SANDBOX_CONSUMER_KEY`\n- `ETRADE_SANDBOX_CONSUMER_SECRET`\n- `ETRADE_SANDBOX_ACCESS_TOKEN`\n- `ETRADE_SANDBOX_ACCESS_SECRET`\n

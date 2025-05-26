@@ -12,8 +12,19 @@ pub struct AlpacaConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct ETradeConfig {
+    pub consumer_key: String,
+    pub consumer_secret: String,
+    pub access_token: String,
+    pub access_secret: String,
+    #[serde(default)]
+    pub sandbox: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub alpaca: AlpacaConfig,
+    pub etrade: ETradeConfig,
     pub log_level: String,
     pub paper_trading: bool,
 }
@@ -46,12 +57,50 @@ impl Config {
             .map(|v| v.to_lowercase() == "true")
             .unwrap_or(default_paper_trading);
 
+        // Prefer sandbox credentials if provided
+        let etrade_consumer_key = env::var("ETRADE_SANDBOX_CONSUMER_KEY")
+            .or_else(|_| env::var("ETRADE_CONSUMER_KEY"))
+            .map_err(|_| {
+                OptionsError::ConfigError(
+                    "ETRADE_SANDBOX_CONSUMER_KEY environment variable not set".to_string(),
+                )
+            })?;
+        let etrade_consumer_secret = env::var("ETRADE_SANDBOX_CONSUMER_SECRET")
+            .or_else(|_| env::var("ETRADE_CONSUMER_SECRET"))
+            .map_err(|_| {
+                OptionsError::ConfigError(
+                    "ETRADE_SANDBOX_CONSUMER_SECRET environment variable not set".to_string(),
+                )
+            })?;
+        let etrade_access_token = env::var("ETRADE_SANDBOX_ACCESS_TOKEN")
+            .or_else(|_| env::var("ETRADE_ACCESS_TOKEN"))
+            .map_err(|_| {
+                OptionsError::ConfigError(
+                    "ETRADE_SANDBOX_ACCESS_TOKEN environment variable not set".to_string(),
+                )
+            })?;
+        let etrade_access_secret = env::var("ETRADE_SANDBOX_ACCESS_SECRET")
+            .or_else(|_| env::var("ETRADE_ACCESS_SECRET"))
+            .map_err(|_| {
+                OptionsError::ConfigError(
+                    "ETRADE_SANDBOX_ACCESS_SECRET environment variable not set".to_string(),
+                )
+            })?;
+        let etrade_sandbox = true;
+
         Ok(Config {
             alpaca: AlpacaConfig {
                 api_key,
                 api_secret,
                 base_url,
                 data_url,
+            },
+            etrade: ETradeConfig {
+                consumer_key: etrade_consumer_key,
+                consumer_secret: etrade_consumer_secret,
+                access_token: etrade_access_token,
+                access_secret: etrade_access_secret,
+                sandbox: etrade_sandbox,
             },
             log_level,
             paper_trading,

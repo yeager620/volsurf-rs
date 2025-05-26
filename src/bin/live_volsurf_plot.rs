@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::plot::{Line, Plot, PlotPoints, Points};
-use options_rs::api::RestClient;
+use options_rs::api::ETradeClient;
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
 use options_rs::models::volatility::VolatilitySurface;
@@ -260,137 +260,26 @@ async fn run_volatility_surface_plot(
     }
 
     let config = Config::from_env()?;
-    let rest_client = RestClient::new(config.alpaca.clone());
+    let etrade_client = ETradeClient::new(config.etrade.clone());
 
-    info!("Fetching option chain snapshots for {}", symbol);
-    let chain_resp = rest_client
-        .get_option_chain_snapshots(
-            symbol,
-            Some("indicative"), // feed
-            Some(1000),         // limit
-            None,               // updated_since
-            None,               // page_token
-            None,               // option_type
-            None,               // strike_price_gte
-            None,               // strike_price_lte
-            None,               // expiration_date
-            None,               // expiration_date_gte
-            None,               // expiration_date_lte
-            None,               // root_symbol
-        )
-        .await?;
-
-    if chain_resp.snapshots.is_empty() {
-        warn!("No option snapshots returned for symbol {}", symbol);
+    info!("Fetching expiry dates for {}", symbol);
+    let dates = etrade_client.option_expire_dates(symbol).await?;
+    if dates.is_empty() {
+        warn!("No expirations returned for {}", symbol);
         return Ok(());
     }
+    let chosen_expiry = dates[0];
 
-    use std::collections::HashMap;
-    use chrono::NaiveDate;
+    info!("Fetching option chain for {} {}", symbol, chosen_expiry);
+    let mut quotes = etrade_client.option_chains(symbol, chosen_expiry).await?;
 
-    let mut by_exp: HashMap<NaiveDate, Vec<String>> = HashMap::new();
-    for occ in chain_resp.snapshots.keys() {
-        if let Some(contract) = OptionContract::from_occ_symbol(occ) {
-            let exp = contract.expiration.date_naive();
-            by_exp.entry(exp).or_default().push(occ.clone());
-        }
-    }
-
-    let Some((&chosen_expiry, symbols_vec)) = by_exp.iter().min_by_key(|(d, _)| *d) else {
-        warn!("No expirations found for symbol {}", symbol);
-        return Ok(());
-    };
-
-    let symbol_list: Vec<&str> = symbols_vec.iter().map(String::as_str).collect();
-
-    let snap_resp = rest_client
-        .get_option_snapshots(&symbol_list, Some("indicative"), None, None, None)
-        .await?;
-
-    let spot_json = rest_client.get_stock_snapshot(symbol).await?;
+    let under_quotes = etrade_client.quotes(&[symbol]).await?;
     let mut underlying_price = 0.0;
-    if let Some(val) = spot_json.get(symbol) {
-        underlying_price = val
-            .get("dailyBar")
-            .and_then(|v| v.get("c"))
-            .and_then(|v| v.as_f64())
-            .or_else(|| {
-                val.get("latestTrade")
-                    .and_then(|v| v.get("p"))
-                    .and_then(|v| v.as_f64())
-            })
-            .unwrap_or(0.0);
+    if let Some(q) = under_quotes.first() {
+        underlying_price = q.lastTrade.or(q.bid).unwrap_or(0.0);
     }
-
-    let mut quotes = Vec::new();
-    for (occ, snap) in snap_resp.snapshots {
-        if let Some(contract) = OptionContract::from_occ_symbol(&occ) {
-            if contract.expiration.date_naive() != chosen_expiry {
-                continue;
-            }
-            let mut bid: Option<f64> = None;
-            let mut ask: Option<f64> = None;
-            let mut last_price: Option<f64> = None;
-            let mut volume: u64 = 0;
-            let mut timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
-
-            if let Some(q) = snap.last_quote {
-                bid = Some(q.bid);
-                ask = Some(q.ask);
-                timestamp = Some(q.t);
-            }
-
-            if let Some(t) = snap.last_trade {
-                last_price = Some(t.price);
-                volume = t.size;
-                if timestamp.is_none() {
-                    timestamp = Some(t.t);
-                }
-            }
-
-            if bid.is_some() && ask.is_some() {
-                let spread = ask.unwrap() - bid.unwrap();
-                let mid = (ask.unwrap() + bid.unwrap()) / 2.0;
-                if mid <= 0.0 || spread / mid > 0.05 {
-                    continue;
-                }
-            } else {
-                continue;
-            }
-
-            if last_price.is_none() {
-                if let Some(bar) = snap
-                    .dailyBar
-                    .as_ref()
-                    .or(snap.minuteBar.as_ref())
-                    .or(snap.prevDailyBar.as_ref())
-                {
-                    last_price = Some(bar.c);
-                    if timestamp.is_none() {
-                        timestamp = Some(bar.t);
-                    }
-                }
-            }
-
-            if timestamp.is_none() {
-                timestamp = Some(chrono::Utc::now());
-            }
-
-            if let (Some(bid), Some(ask), Some(last_price), Some(timestamp)) =
-                (bid, ask, last_price, timestamp)
-            {
-                quotes.push(OptionQuote {
-                    contract,
-                    bid,
-                    ask,
-                    last: last_price,
-                    volume,
-                    open_interest: 0,
-                    underlying_price,
-                    timestamp,
-                });
-            }
-        }
+    for q in &mut quotes {
+        q.underlying_price = underlying_price;
     }
 
     // Use Polars for efficient processing
