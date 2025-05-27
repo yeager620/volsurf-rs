@@ -87,6 +87,20 @@ pub struct OptionQuotesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StockQuote {
+    pub t: DateTime<Utc>,
+    #[serde(alias = "bp")]
+    pub bid: f64,
+    #[serde(alias = "ap")]
+    pub ask: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatestStockQuotesResponse {
+    pub quotes: std::collections::HashMap<String, StockQuote>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionLastTrade {
     pub t: DateTime<Utc>,
     #[serde(alias = "p")]
@@ -585,6 +599,30 @@ impl RestClient {
             .json::<serde_json::Value>()
             .await
             .map_err(|e| OptionsError::ParseError(format!("Failed to parse stock snapshot: {}", e)))?;
+
+        Ok(data)
+    }
+
+    /// Get the latest stock quotes for the given symbols
+    pub async fn get_latest_stock_quotes(
+        &self,
+        symbols: &[&str],
+    ) -> Result<LatestStockQuotesResponse> {
+        let symbols_str = symbols.join(",");
+        let url = format!(
+            "{}/v2/stocks/quotes/latest?symbols={}",
+            self.config.data_url, symbols_str
+        );
+
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| OptionsError::Other(format!("Failed to get latest stock quotes: {}", e)))?;
+
+        let data = resp.json::<LatestStockQuotesResponse>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse latest stock quotes: {}", e))
+        })?;
 
         Ok(data)
     }
