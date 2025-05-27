@@ -21,18 +21,31 @@ pub struct Asset {
 // Define proper types for API responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionContract {
-    pub symbol: String,
     pub id: String,
-    pub strike_price: f64,
+    pub symbol: String,
+    pub name: String,
+    pub status: String,
+    pub tradable: bool,
     pub expiration_date: String,
-    pub contract_type: String,
-    pub multiplier: i32,
+    pub root_symbol: String,
     pub underlying_symbol: String,
+    pub underlying_asset_id: String,
+    #[serde(rename = "type")]
+    pub contract_type: String,
+    pub style: String,
+    pub strike_price: String, // Note: API returns this as a string "5", not a number
+    pub multiplier: String,
+    pub size: String,
+    pub open_interest: Option<String>,
+    pub open_interest_date: Option<String>,
+    pub close_price: Option<String>,
+    pub close_price_date: Option<String>,
+    pub ppind: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionContractsResponse {
-    #[serde(default)]
+    #[serde(rename = "option_contracts", default)]
     pub results: Vec<OptionContract>,
     pub next_page_token: Option<String>,
 }
@@ -101,6 +114,12 @@ pub struct LatestStockQuotesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SingleStockQuoteResponse {
+    pub quote: StockQuote,
+    pub symbol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionLastTrade {
     pub t: DateTime<Utc>,
     #[serde(alias = "p")]
@@ -158,6 +177,7 @@ pub struct OptionSnapshot {
     pub last_trade: Option<OptionLastTrade>,
     pub last_quote: Option<OptionLastQuote>,
     pub greeks: Option<OptionGreeks>,
+    pub impliedVolatility: Option<f64>,
     pub dailyBar: Option<OptionBar>,
     pub minuteBar: Option<OptionBar>,
     pub prevDailyBar: Option<OptionBar>,
@@ -277,6 +297,13 @@ impl RestClient {
         let data = resp.json::<OptionContractsResponse>().await.map_err(|e| {
             OptionsError::ParseError(format!("Failed to parse options chain: {}", e))
         })?;
+
+        // Add detailed logging for debugging
+        info!("Response parsed successfully. Got {} contracts", data.results.len());
+        for (i, contract) in data.results.iter().enumerate().take(3) {
+            info!("Sample contract {}: Symbol={}, Strike={}, Exp={}", 
+                  i, contract.symbol, contract.strike_price, contract.expiration_date);
+        }
 
         Ok(data)
     }
@@ -512,8 +539,28 @@ impl RestClient {
             OptionsError::Other(format!("Failed to get option chain snapshots: {}", e))
         })?;
 
-        let data = resp.json::<OptionSnapshotsResponse>().await.map_err(|e| {
-            OptionsError::ParseError(format!("Failed to parse option chain snapshots: {}", e))
+        // Check if the response is successful
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let error_text = resp.text().await.unwrap_or_else(|_| "Could not read error response".to_string());
+            return Err(OptionsError::Other(format!(
+                "Option chain snapshots request failed with status {}: {}",
+                status, error_text
+            )));
+        }
+
+        // Get the response text for debugging
+        let resp_text = resp.text().await.map_err(|e| {
+            OptionsError::Other(format!("Failed to get response text: {}", e))
+        })?;
+
+        // Log the first 200 characters of the response for debugging
+        debug!("Option chain snapshots response (first 200 chars): {}", 
+               if resp_text.len() > 200 { &resp_text[..200] } else { &resp_text });
+
+        // Parse the response
+        let data = serde_json::from_str::<OptionSnapshotsResponse>(&resp_text).map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse option chain snapshots: {} - Response: {}", e, resp_text))
         })?;
 
         Ok(data)
@@ -622,6 +669,44 @@ impl RestClient {
 
         let data = resp.json::<LatestStockQuotesResponse>().await.map_err(|e| {
             OptionsError::ParseError(format!("Failed to parse latest stock quotes: {}", e))
+        })?;
+
+        Ok(data)
+    }
+
+    /// Get the latest stock quote for a single symbol
+    pub async fn get_latest_single_stock_quote(
+        &self,
+        symbol: &str,
+        feed: Option<&str>,
+        currency: Option<&str>,
+    ) -> Result<SingleStockQuoteResponse> {
+        let mut url = format!(
+            "{}/v2/stocks/{}/quotes/latest",
+            self.config.data_url, symbol
+        );
+
+        let mut query_params = Vec::new();
+        if let Some(feed_val) = feed {
+            query_params.push(format!("feed={}", feed_val));
+        }
+        if let Some(currency_val) = currency {
+            query_params.push(format!("currency={}", currency_val));
+        }
+
+        if !query_params.is_empty() {
+            url.push('?');
+            url.push_str(&query_params.join("&"));
+        }
+
+        let resp = self
+            .auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| OptionsError::Other(format!("Failed to get latest stock quote: {}", e)))?;
+
+        let data = resp.json::<SingleStockQuoteResponse>().await.map_err(|e| {
+            OptionsError::ParseError(format!("Failed to parse latest stock quote: {}", e))
         })?;
 
         Ok(data)
