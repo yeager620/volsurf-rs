@@ -177,10 +177,14 @@ pub struct OptionSnapshot {
     pub last_trade: Option<OptionLastTrade>,
     pub last_quote: Option<OptionLastQuote>,
     pub greeks: Option<OptionGreeks>,
-    pub impliedVolatility: Option<f64>,
-    pub dailyBar: Option<OptionBar>,
-    pub minuteBar: Option<OptionBar>,
-    pub prevDailyBar: Option<OptionBar>,
+    #[serde(rename = "impliedVolatility")]
+    pub implied_volatility: Option<f64>,
+    #[serde(rename = "dailyBar")]
+    pub daily_bar: Option<OptionBar>,
+    #[serde(rename = "minuteBar")]
+    pub minute_bar: Option<OptionBar>,
+    #[serde(rename = "prevDailyBar")]
+    pub prev_daily_bar: Option<OptionBar>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

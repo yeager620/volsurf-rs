@@ -11,10 +11,12 @@ use options_rs::models::volatility::ImpliedVolatility;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{info, warn, debug};
+use chrono::TimeZone;
 
 struct PlotData {
     surface: VolatilitySurface,
     expirations: Vec<chrono::NaiveDate>,
+    underlying_price: f64,
 }
 
 struct ExpirationsData {
@@ -92,16 +94,27 @@ fn calculate_volatility_surface_with_iv(
     Ok(surface)
 }
 
+// Define an enum for the view mode
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum ViewMode {
+    VolatilitySkew,
+    TermStructure,
+}
+
 struct VolatilitySurfaceApp {
     ticker_input: String,
     status: String,
-    ticker_sender: mpsc::Sender<(String, Option<chrono::NaiveDate>)>,
+    ticker_sender: mpsc::Sender<(String, Option<chrono::NaiveDate>, Option<ViewMode>)>,
     plot_receiver: mpsc::Receiver<PlotData>,
     expirations_receiver: mpsc::Receiver<ExpirationsData>,
     surface: Option<VolatilitySurface>,
     expirations: Vec<chrono::NaiveDate>,
     selected_expiration: usize,
     has_expirations: bool,
+    expiry_selected: bool,
+    underlying_price: Option<f64>,
+    view_mode: ViewMode,
+    selected_strike: Option<f64>,
 }
 
 
@@ -113,6 +126,7 @@ impl eframe::App for VolatilitySurfaceApp {
             self.expirations = exp_data.expirations;
             self.has_expirations = true;
             self.selected_expiration = 0;
+            self.expiry_selected = false;
 
             // Request immediate redraw to show the expirations dropdown
             ctx.request_repaint();
@@ -122,9 +136,10 @@ impl eframe::App for VolatilitySurfaceApp {
         while let Ok(plot_data) = self.plot_receiver.try_recv() {
             self.status = "Received new plot data".to_string();
             self.surface = Some(plot_data.surface);
+            self.underlying_price = Some(plot_data.underlying_price);
             // Don't reset selected_expiration to keep the user's selection
 
-            // Request immediate redraw to show the new plot data
+            // Request immediate redraw to show the new plot data and ensure it's centered
             ctx.request_repaint();
         }
 
@@ -145,9 +160,12 @@ impl eframe::App for VolatilitySurfaceApp {
                         let ticker = self.ticker_input.trim().to_uppercase();
                         self.status = format!("Fetching contracts for {}", ticker);
                         self.has_expirations = false;
+                        // Reset the plot to ensure it will be re-centered when new data arrives
                         self.surface = None;
+                        self.underlying_price = None;
+                        self.expiry_selected = false;
 
-                        if let Err(e) = self.ticker_sender.try_send((ticker, None)) {
+                        if let Err(e) = self.ticker_sender.try_send((ticker, None, None)) {
                             self.status = format!("Error: {}", e);
                         }
                     }
@@ -158,38 +176,132 @@ impl eframe::App for VolatilitySurfaceApp {
             ui.label(&self.status);
             ui.separator();
 
-            // Show expiration dropdown if we have expirations
+            // Show view mode selection if we have expirations
             if !self.expirations.is_empty() && self.has_expirations {
+                // Add view mode selection first
                 ui.horizontal(|ui| {
-                    ui.label("Expiration:");
-                    egui::ComboBox::from_id_source("expiry_select")
-                        .selected_text(
-                            self.expirations[self.selected_expiration]
-                                .format("%Y-%m-%d")
-                                .to_string(),
-                        )
-                        .show_ui(ui, |ui| {
-                            for (i, exp) in self.expirations.iter().enumerate() {
-                                let response = ui
-                                    .selectable_value(
-                                        &mut self.selected_expiration,
-                                        i,
-                                        exp.format("%Y-%m-%d").to_string(),
-                                    );
+                    ui.label("View Mode:");
+                    let old_view_mode = self.view_mode;
+                    ui.radio_value(&mut self.view_mode, ViewMode::VolatilitySkew, "Volatility Skew");
+                    ui.radio_value(&mut self.view_mode, ViewMode::TermStructure, "Term Structure");
 
-                                if response.clicked() {
-                                    let ticker = self.ticker_input.trim().to_uppercase();
-                                    self.status = format!("Fetching data for {} exp {}", ticker, exp.format("%Y-%m-%d"));
-                                    // Request immediate redraw to update status message
-                                    ctx.request_repaint();
-                                    // Send the request to fetch data for this expiry
-                                    if let Err(e) = self.ticker_sender.try_send((ticker, Some(*exp))) {
-                                        self.status = format!("Error: {}", e);
+                    // Check if view mode has changed
+                    if old_view_mode != self.view_mode {
+                        // If switching to term structure, load all option data
+                        if self.view_mode == ViewMode::TermStructure && !self.ticker_input.trim().is_empty() {
+                            let ticker = self.ticker_input.trim().to_uppercase();
+                            self.status = format!("Fetching all option data for {}", ticker);
+                            // Reset the plot to ensure it will be re-centered
+                            self.surface = None;
+                            // Request immediate redraw to update status message
+                            ctx.request_repaint();
+                            // Send the request to fetch all option data
+                            if let Err(e) = self.ticker_sender.try_send((ticker, None, Some(self.view_mode))) {
+                                self.status = format!("Error: {}", e);
+                            }
+                        }
+                    }
+                });
+
+                // Show either expiry date dropdown or strike price dropdown based on view mode
+                if self.view_mode == ViewMode::VolatilitySkew {
+                    // Show expiration dropdown for Volatility Skew view
+                    ui.horizontal(|ui| {
+                        ui.label("Expiration:");
+                        egui::ComboBox::from_id_source("expiry_select")
+                            .selected_text(
+                                if self.expiry_selected {
+                                    self.expirations[self.selected_expiration]
+                                        .format("%Y-%m-%d")
+                                        .to_string()
+                                } else {
+                                    "select expiry".to_string()
+                                }
+                            )
+                            .show_ui(ui, |ui| {
+                                for (i, exp) in self.expirations.iter().enumerate() {
+                                    let response = ui
+                                        .selectable_value(
+                                            &mut self.selected_expiration,
+                                            i,
+                                            exp.format("%Y-%m-%d").to_string(),
+                                        );
+
+                                    if response.clicked() {
+                                        self.expiry_selected = true;
+                                        let ticker = self.ticker_input.trim().to_uppercase();
+                                        self.status = format!("Fetching data for {} exp {}", ticker, exp.format("%Y-%m-%d"));
+                                        // Reset the plot to ensure it will be re-centered
+                                        self.surface = None;
+                                        // Request immediate redraw to update status message
+                                        ctx.request_repaint();
+                                        // Send the request to fetch data for this expiry
+                                        if let Err(e) = self.ticker_sender.try_send((ticker, Some(*exp), Some(self.view_mode))) {
+                                            self.status = format!("Error: {}", e);
+                                        }
                                     }
                                 }
+                            });
+                    });
+                } else if self.view_mode == ViewMode::TermStructure {
+                    // For term structure, always show strike selection dropdown
+                    ui.horizontal(|ui| {
+                        ui.label("Strike Price:");
+
+                        // If we have surface data, use it to populate the dropdown
+                        if let Some(ref surface) = self.surface {
+                            let strikes: Vec<f64> = surface.strikes.clone();
+
+                            if !strikes.is_empty() {
+                                // Initialize selected_strike if it's None
+                                if self.selected_strike.is_none() {
+                                    // Try to find a strike close to the underlying price
+                                    if let Some(underlying) = self.underlying_price {
+                                        let closest_strike = strikes.iter()
+                                            .min_by(|a, b| {
+                                                let a_diff = (*a - underlying).abs();
+                                                let b_diff = (*b - underlying).abs();
+                                                a_diff.partial_cmp(&b_diff).unwrap_or(std::cmp::Ordering::Equal)
+                                            })
+                                            .cloned();
+                                        self.selected_strike = closest_strike;
+                                    } else {
+                                        // Default to the middle strike
+                                        self.selected_strike = strikes.get(strikes.len() / 2).cloned();
+                                    }
+                                }
+
+                                egui::ComboBox::from_id_source("strike_select")
+                                    .selected_text(
+                                        if let Some(strike) = self.selected_strike {
+                                            format!("{:.2}", strike)
+                                        } else {
+                                            "select strike".to_string()
+                                        }
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        for strike in &strikes {
+                                            let response = ui.selectable_value(
+                                                &mut self.selected_strike,
+                                                Some(*strike),
+                                                format!("{:.2}", strike),
+                                            );
+
+                                            if response.clicked() {
+                                                // Request immediate redraw to update the plot
+                                                ctx.request_repaint();
+                                            }
+                                        }
+                                    });
+                            } else {
+                                ui.label("No strike prices available. Please try a different symbol.");
                             }
-                        });
-                });
+                        } else {
+                            // If we don't have surface data yet, show a message and a disabled dropdown
+                            ui.label("Loading option data... Strike prices will be available soon.");
+                        }
+                    });
+                }
             }
 
             // Show plot if we have surface data
@@ -201,46 +313,166 @@ impl eframe::App for VolatilitySurfaceApp {
                     self.selected_expiration = 0;
                 }
 
-                if !self.expirations.is_empty() {
-                    let exp_dt = chrono::DateTime::<chrono::Utc>::from_utc(
-                        self.expirations[self.selected_expiration]
-                            .and_hms_opt(16, 0, 0)
-                            .unwrap(),
-                        chrono::Utc,
-                    );
+                // Check if we can show the plot based on view mode
+                let can_show_plot = match self.view_mode {
+                    // For volatility skew, we need an expiry to be selected
+                    ViewMode::VolatilitySkew => !self.expirations.is_empty() && self.expiry_selected,
+                    // For term structure, we need a strike to be selected
+                    ViewMode::TermStructure => self.selected_strike.is_some(),
+                };
 
-                    if let Ok((strikes, vols)) = surface.slice_by_expiration(exp_dt) {
-                        let strike_vec: Vec<f64> = strikes.iter().cloned().collect();
-                        let vol_vec: Vec<f64> = vols.iter().cloned().collect();
-                        let scatter_points: Vec<[f64; 2]> = strike_vec
-                            .iter()
-                            .zip(vol_vec.iter())
-                            .map(|(s, v)| [*s, *v])
-                            .collect();
-                        let spline_points = cubic_hermite_spline(&strike_vec, &vol_vec, 10);
-                        let line = Line::new(PlotPoints::from(spline_points));
-                        let scatter = Points::new(PlotPoints::from(scatter_points));
+                if can_show_plot {
+                    // Different plotting logic based on view mode
+                    match self.view_mode {
+                        ViewMode::VolatilitySkew => {
+                            // Volatility Skew View - plot volatility vs strike for a single expiration
+                            let exp_dt = chrono::Utc.from_utc_datetime(
+                                &self.expirations[self.selected_expiration]
+                                    .and_hms_opt(16, 0, 0)
+                                    .unwrap()
+                            );
 
-                        Plot::new("vol_smile_plot")
-                            .height(400.0)
-                            .width(900.0)
-                            .label_formatter(|_, _| String::new())
-                            .show(ui, |plot_ui| {
-                                plot_ui.line(line);
-                                plot_ui.points(scatter);
-                            });
-                    } else {
-                        ui.label("Failed to extract smile data for the selected expiration date.");
-                        ui.label("Try selecting a different expiration date.");
+                            if let Ok((strikes, vols)) = surface.slice_by_expiration(exp_dt) {
+                                let strike_vec: Vec<f64> = strikes.iter().cloned().collect();
+                                let vol_vec: Vec<f64> = vols.iter().cloned().collect();
+
+                                // Find the ATM strike (closest to the underlying price)
+                                let underlying = self.underlying_price.unwrap_or(0.0);
+
+                                // Create a vector of (strike, vol, distance_from_atm) tuples
+                                let mut strike_vol_dist: Vec<(f64, f64, f64)> = strike_vec
+                                    .iter()
+                                    .zip(vol_vec.iter())
+                                    .map(|(s, v)| (*s, *v, (s - underlying).abs()))
+                                    .collect();
+
+                                // Sort by distance from ATM
+                                strike_vol_dist.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+                                // Create a plot with auto-scaling to ATM
+                                let mut plot = Plot::new("vol_smile_plot")
+                                    .height(400.0)
+                                    .width(900.0)
+                                    .label_formatter(|_, _| String::new());
+
+                                // If we have an underlying price, center the plot on it
+                                if underlying > 0.0 {
+                                    // Find min and max strikes to show (focus on ATM +/- 20%)
+                                    let strike_range = 0.2 * underlying;
+                                    let min_strike = underlying - strike_range;
+                                    let max_strike = underlying + strike_range;
+
+                                    // Center the plot on the underlying price by setting equal ranges on both sides
+                                    // Include the underlying price itself to ensure it's in the view
+                                    plot = plot.include_x(underlying)
+                                               .include_x(min_strike)
+                                               .include_x(max_strike);
+
+                                    // Also include several points in between to force the view to be centered
+                                    let step = strike_range / 5.0;
+                                    for i in 1..5 {
+                                        plot = plot.include_x(underlying - i as f64 * step)
+                                                   .include_x(underlying + i as f64 * step);
+                                    }
+                                }
+
+                                plot.show(ui, |plot_ui| {
+                                    // First create the spline from all points for a smooth curve
+                                    let spline_points = cubic_hermite_spline(&strike_vec, &vol_vec, 10);
+                                    let line = Line::new(PlotPoints::from(spline_points));
+                                    plot_ui.line(line);
+
+                                    // Render all points with the same color and size
+                                    // Still render progressively from ATM outwards for better visualization
+                                    let all_points: Vec<[f64; 2]> = strike_vol_dist
+                                        .iter()
+                                        .map(|(s, v, _)| [*s, *v])
+                                        .collect();
+
+                                    let scatter = Points::new(PlotPoints::from(all_points))
+                                        .radius(3.0)
+                                        .color(egui::Color32::from_rgb(139, 0, 0)); // Dark red
+                                    plot_ui.points(scatter);
+                                });
+                            } else {
+                                ui.label("Failed to extract smile data for the selected expiration date.");
+                                ui.label("Try selecting a different expiration date.");
+                            }
+                        },
+                        ViewMode::TermStructure => {
+                            // Term Structure View - plot volatility vs time for a single strike
+                            if let Some(strike) = self.selected_strike {
+                                if let Ok((times, vols)) = surface.slice_by_strike(strike) {
+                                    let time_vec: Vec<f64> = times.iter().cloned().collect();
+                                    let vol_vec: Vec<f64> = vols.iter().cloned().collect();
+
+                                    // Create a plot for term structure
+                                    let plot = Plot::new("term_structure_plot")
+                                        .height(400.0)
+                                        .width(900.0)
+                                        .label_formatter(|_, _| String::new());
+
+                                    plot.show(ui, |plot_ui| {
+                                        // Create points for the plot
+                                        let mut points: Vec<[f64; 2]> = time_vec
+                                            .iter()
+                                            .zip(vol_vec.iter())
+                                            .map(|(t, v)| [*t, *v])
+                                            .collect();
+
+                                        // Sort points by time
+                                        points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
+
+                                        // Extract sorted x and y values for spline
+                                        let (x_vals, y_vals): (Vec<f64>, Vec<f64>) = points
+                                            .iter()
+                                            .map(|p| (p[0], p[1]))
+                                            .unzip();
+
+                                        // Create spline for smooth curve
+                                        let spline_points = cubic_hermite_spline(&x_vals, &y_vals, 10);
+                                        let line = Line::new(PlotPoints::from(spline_points));
+                                        plot_ui.line(line);
+
+                                        // Add points
+                                        let scatter = Points::new(PlotPoints::from(points))
+                                            .radius(3.0)
+                                            .color(egui::Color32::from_rgb(0, 100, 139)); // Dark blue
+                                        plot_ui.points(scatter);
+                                    });
+                                } else {
+                                    ui.label("Failed to extract term structure data for the selected strike price.");
+                                    ui.label("Try selecting a different strike price.");
+                                }
+                            } else {
+                                ui.label("Please select a strike price to view the term structure.");
+                            }
+                        }
                     }
                 } else {
-                    ui.label("No expiration dates available. Please try a different symbol.");
+                    // Show appropriate message based on view mode
+                    match self.view_mode {
+                        ViewMode::VolatilitySkew => {
+                            if !self.expiry_selected {
+                                ui.label("Please select an expiry from the dropdown above to render the volatility skew.");
+                            } else {
+                                ui.label("No expiration dates available. Please try a different symbol.");
+                            }
+                        },
+                        ViewMode::TermStructure => {
+                            if self.selected_strike.is_none() {
+                                ui.label("Please select a strike price from the dropdown above to render the term structure.");
+                            } else {
+                                ui.label("Failed to render term structure. Please try a different symbol or strike price.");
+                            }
+                        }
+                    }
                 }
             } else if !self.has_expirations {
                 ui.label("Enter a ticker symbol and click 'Fetch Options Chain' to start.");
                 ui.label("Press Ctrl+C in the terminal to exit the application.");
             } else {
-                ui.label("Select an expiration date to view the volatility surface.");
+                ui.label("Select an expiry from the dropdown to view the volatility surface.");
             }
         });
     }
@@ -377,6 +609,7 @@ async fn run_volatility_surface_plot(
     symbol: &str,
     plot_sender: mpsc::Sender<PlotData>,
     expiry: Option<chrono::NaiveDate>,
+    view_mode: Option<ViewMode>,
 ) -> Result<()> {
     let config = Config::from_env()?;
     let rest_client = RestClient::new(config.alpaca.clone());
@@ -416,14 +649,6 @@ async fn run_volatility_surface_plot(
     let quote_resp = rest_client.get_latest_single_stock_quote(symbol, None, None).await?;
     let underlying_price = (quote_resp.quote.bid + quote_resp.quote.ask) / 2.0;
 
-    let chosen = expiry.unwrap_or(expirations[0]);
-
-    // Format the chosen date as YYYY-MM-DD
-    let chosen_str = chosen.format("%Y-%m-%d").to_string();
-
-    // Use the new API endpoint to get option chain snapshots
-    info!("Fetching option chain snapshots for {} exp {}", symbol, chosen_str);
-
     // Get the current stock price to set a reasonable strike price range
     let strike_range_factor = 0.5; // 50% above and below current price
     let strike_min = underlying_price * (1.0 - strike_range_factor);
@@ -432,34 +657,91 @@ async fn run_volatility_surface_plot(
     info!("Using strike price range: {:.2} to {:.2} for underlying price {:.2}", 
           strike_min, strike_max, underlying_price);
 
-    let snaps = rest_client
-        .get_option_chain_snapshots(
-            symbol,
-            Some("indicative"),
-            Some(1000),         // Limit to 1000 snapshots
-            None,               // No updated_since filter
-            None,               // No page token
-            None,               // No option type filter (get both calls and puts)
-            Some(strike_min),   // Set minimum strike price
-            Some(strike_max),   // Set maximum strike price
-            Some(&chosen_str),  // Filter by exact expiration date
-            None,               // No expiration_date_gte filter
-            None,               // No expiration_date_lte filter
-            None,               // No root_symbol filter
-        )
-        .await?;
+    // Determine whether to filter by expiry date
+    let snaps = if let Some(ViewMode::TermStructure) = view_mode {
+        // For term structure view, always fetch all options without filtering by expiry date
+        info!("Term structure view: Fetching all option chain snapshots for {}", symbol);
+
+        rest_client
+            .get_option_chain_snapshots(
+                symbol,
+                Some("indicative"),
+                Some(1000),         // Limit to 1000 snapshots
+                None,               // No updated_since filter
+                None,               // No page token
+                None,               // No option type filter (get both calls and puts)
+                Some(strike_min),   // Set minimum strike price
+                Some(strike_max),   // Set maximum strike price
+                None,               // No filter by exact expiration date
+                Some(&today),       // Get options expiring today or later
+                None,               // No expiration_date_lte filter
+                None,               // No root_symbol filter
+            )
+            .await?
+    } else if let Some(chosen) = expiry {
+        // For volatility skew view or when expiry is provided, filter by expiry date
+        let chosen_str = chosen.format("%Y-%m-%d").to_string();
+        info!("Volatility skew view: Fetching option chain snapshots for {} exp {}", symbol, chosen_str);
+
+        rest_client
+            .get_option_chain_snapshots(
+                symbol,
+                Some("indicative"),
+                Some(1000),         // Limit to 1000 snapshots
+                None,               // No updated_since filter
+                None,               // No page token
+                None,               // No option type filter (get both calls and puts)
+                Some(strike_min),   // Set minimum strike price
+                Some(strike_max),   // Set maximum strike price
+                Some(&chosen_str),  // Filter by exact expiration date
+                None,               // No expiration_date_gte filter
+                None,               // No expiration_date_lte filter
+                None,               // No root_symbol filter
+            )
+            .await?
+    } else {
+        // Default case: fetch all options without filtering by expiry date
+        info!("Fetching all option chain snapshots for {}", symbol);
+
+        rest_client
+            .get_option_chain_snapshots(
+                symbol,
+                Some("indicative"),
+                Some(1000),         // Limit to 1000 snapshots
+                None,               // No updated_since filter
+                None,               // No page token
+                None,               // No option type filter (get both calls and puts)
+                Some(strike_min),   // Set minimum strike price
+                Some(strike_max),   // Set maximum strike price
+                None,               // No filter by exact expiration date
+                Some(&today),       // Get options expiring today or later
+                None,               // No expiration_date_lte filter
+                None,               // No root_symbol filter
+            )
+            .await?
+    };
 
     if snaps.snapshots.is_empty() {
-        warn!("No option snapshots found for {} exp {}", symbol, chosen);
+        if let Some(chosen) = expiry {
+            warn!("No option snapshots found for {} exp {}", symbol, chosen);
+        } else {
+            warn!("No option snapshots found for {}", symbol);
+        }
         return Ok(());
     }
 
     let mut quotes_with_iv = Vec::new();
     for (occ, snap) in snaps.snapshots {
         if let Some(contract) = OptionContract::from_occ_symbol(&occ) {
-            // Skip if expiration date doesn't match (extra safety check)
-            if contract.expiration.date_naive() != chosen {
-                continue;
+            // If an expiry is provided and we're not in term structure mode, skip contracts that don't match
+            if let Some(chosen) = expiry {
+                if let Some(ViewMode::TermStructure) = view_mode {
+                    // In term structure mode, we want all expiry dates for the selected strike
+                    // So we don't filter by expiry date
+                } else if contract.expiration.date_naive() != chosen {
+                    // In volatility skew mode, we only want contracts for the selected expiry date
+                    continue;
+                }
             }
 
             // Try to get bid and ask from last_quote
@@ -475,10 +757,10 @@ async fn run_volatility_surface_plot(
 
             // Try to get price data from bars if not available from quotes/trades
             let bar = snap
-                .dailyBar
+                .daily_bar
                 .as_ref()
-                .or(snap.minuteBar.as_ref())
-                .or(snap.prevDailyBar.as_ref());
+                .or(snap.minute_bar.as_ref())
+                .or(snap.prev_daily_bar.as_ref());
 
             if let Some(bar_data) = bar {
                 // Use bar data for missing values
@@ -522,7 +804,7 @@ async fn run_volatility_surface_plot(
             let timestamp = timestamp.unwrap_or_else(chrono::Utc::now);
 
             // Get implied volatility from the API response if available
-            let implied_volatility = snap.impliedVolatility;
+            let implied_volatility = snap.implied_volatility;
 
             // Create OptionQuote
             let quote = OptionQuote {
@@ -545,7 +827,11 @@ async fn run_volatility_surface_plot(
     }
 
     if quotes_with_iv.is_empty() {
-        warn!("No quotes collected for {} exp {}", symbol, chosen);
+        if let Some(chosen) = expiry {
+            warn!("No quotes collected for {} exp {}", symbol, chosen);
+        } else {
+            warn!("No quotes collected for {}", symbol);
+        }
         return Ok(());
     }
 
@@ -554,7 +840,11 @@ async fn run_volatility_surface_plot(
     // Use the new function that uses implied volatility directly from the API
     let surface = calculate_volatility_surface_with_iv(&quotes_with_iv, symbol, risk_free_rate)?;
 
-    let plot_data = PlotData { surface, expirations };
+    let plot_data = PlotData { 
+        surface, 
+        expirations,
+        underlying_price,
+    };
     plot_sender
         .send(plot_data)
         .await
@@ -567,7 +857,7 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     config.init_logging()?;
 
-    let (ticker_sender, mut ticker_receiver) = mpsc::channel::<(String, Option<chrono::NaiveDate>)>(10);
+    let (ticker_sender, mut ticker_receiver) = mpsc::channel::<(String, Option<chrono::NaiveDate>, Option<ViewMode>)>(10);
     let (plot_sender, plot_receiver) = mpsc::channel::<PlotData>(10);
     let (expirations_sender, expirations_receiver) = mpsc::channel::<ExpirationsData>(10);
 
@@ -583,23 +873,32 @@ async fn main() -> Result<()> {
             &symbol,
             plot_sender.clone(),
             None,
+            None
         )
         .await?;
         return Ok(());
     }
 
     info!("Starting GUI for ticker input");
-    let plotting_task = tokio::spawn(async move {
-        while let Some((ticker, expiry)) = ticker_receiver.recv().await {
-            info!("Received request for {} exp {:?}", ticker, expiry);
+    let _plotting_task = tokio::spawn(async move {
+        while let Some((ticker, expiry, view_mode)) = ticker_receiver.recv().await {
+            info!("Received request for {} exp {:?} view mode {:?}", ticker, expiry, view_mode);
             if expiry.is_none() {
                 // First fetch expirations
                 if let Err(e) = fetch_expirations(&ticker, expirations_sender.clone()).await {
                     warn!("Error fetching expirations for {}: {}", ticker, e);
                 }
+
+                // If view mode is TermStructure, we can proceed without an expiry date
+                if let Some(ViewMode::TermStructure) = view_mode {
+                    info!("Term structure view selected, fetching all option data for {}", ticker);
+                    if let Err(e) = run_volatility_surface_plot(&ticker, plot_sender.clone(), None, view_mode).await {
+                        warn!("Error plotting term structure for {}: {}", ticker, e);
+                    }
+                }
             } else {
                 // Then fetch surface data with selected expiry
-                if let Err(e) = run_volatility_surface_plot(&ticker, plot_sender.clone(), expiry).await {
+                if let Err(e) = run_volatility_surface_plot(&ticker, plot_sender.clone(), expiry, view_mode).await {
                     warn!("Error plotting volatility surface for {}: {}", ticker, e);
                 }
             }
@@ -616,6 +915,10 @@ async fn main() -> Result<()> {
         expirations: Vec::new(),
         selected_expiration: 0,
         has_expirations: false,
+        expiry_selected: false,
+        underlying_price: None,
+        view_mode: ViewMode::VolatilitySkew, // Default to volatility skew view
+        selected_strike: None,
     };
 
     let native_options = eframe::NativeOptions {

@@ -421,7 +421,7 @@ pub fn calculate_volatility_surface_with_polars(
     }
 
     // Convert IVs to DataFrame for efficient processing
-    let ivs_df = implied_volatilities_to_dataframe(&ivs)?;
+    let _ivs_df = implied_volatilities_to_dataframe(&ivs)?;
 
     // Create volatility surface
     let surface = VolatilitySurface::new(symbol.to_string(), &ivs)?;
