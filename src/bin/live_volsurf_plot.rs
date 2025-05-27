@@ -5,7 +5,7 @@ use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
 use options_rs::models::volatility::VolatilitySurface;
 use options_rs::models::{OptionContract, OptionQuote};
-use options_rs::utils::{self, polars_utils};
+use options_rs::utils::{self};
 use options_rs::models::volatility::ImpliedVolatility;
 
 use serde_json::Value;
@@ -113,13 +113,19 @@ impl eframe::App for VolatilitySurfaceApp {
             self.expirations = exp_data.expirations;
             self.has_expirations = true;
             self.selected_expiration = 0;
+
+            // Request immediate redraw to show the expirations dropdown
+            ctx.request_repaint();
         }
 
         // Check for plot data
         while let Ok(plot_data) = self.plot_receiver.try_recv() {
             self.status = "Received new plot data".to_string();
             self.surface = Some(plot_data.surface);
-            self.selected_expiration = 0;
+            // Don't reset selected_expiration to keep the user's selection
+
+            // Request immediate redraw to show the new plot data
+            ctx.request_repaint();
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -164,17 +170,22 @@ impl eframe::App for VolatilitySurfaceApp {
                         )
                         .show_ui(ui, |ui| {
                             for (i, exp) in self.expirations.iter().enumerate() {
-                                if ui
+                                let response = ui
                                     .selectable_value(
                                         &mut self.selected_expiration,
                                         i,
                                         exp.format("%Y-%m-%d").to_string(),
-                                    )
-                                    .clicked()
-                                {
+                                    );
+
+                                if response.clicked() {
                                     let ticker = self.ticker_input.trim().to_uppercase();
                                     self.status = format!("Fetching data for {} exp {}", ticker, exp.format("%Y-%m-%d"));
-                                    let _ = self.ticker_sender.try_send((ticker, Some(*exp)));
+                                    // Request immediate redraw to update status message
+                                    ctx.request_repaint();
+                                    // Send the request to fetch data for this expiry
+                                    if let Err(e) = self.ticker_sender.try_send((ticker, Some(*exp))) {
+                                        self.status = format!("Error: {}", e);
+                                    }
                                 }
                             }
                         });
@@ -185,35 +196,45 @@ impl eframe::App for VolatilitySurfaceApp {
             if let Some(ref surface) = self.surface {
                 _frame.set_window_size(egui::vec2(1000.0, 700.0));
 
-                let exp_dt = chrono::DateTime::<chrono::Utc>::from_utc(
-                    self.expirations[self.selected_expiration]
-                        .and_hms_opt(16, 0, 0)
-                        .unwrap(),
-                    chrono::Utc,
-                );
-                if let Ok((strikes, vols)) = surface.slice_by_expiration(exp_dt)
-                {
-                    let strike_vec: Vec<f64> = strikes.iter().cloned().collect();
-                    let vol_vec: Vec<f64> = vols.iter().cloned().collect();
-                    let scatter_points: Vec<[f64; 2]> = strike_vec
-                        .iter()
-                        .zip(vol_vec.iter())
-                        .map(|(s, v)| [*s, *v])
-                        .collect();
-                    let spline_points = cubic_hermite_spline(&strike_vec, &vol_vec, 10);
-                    let line = Line::new(PlotPoints::from(spline_points));
-                    let scatter = Points::new(PlotPoints::from(scatter_points));
+                // Make sure we have a valid selected_expiration index
+                if self.selected_expiration >= self.expirations.len() && !self.expirations.is_empty() {
+                    self.selected_expiration = 0;
+                }
 
-                    Plot::new("vol_smile_plot")
-                        .height(400.0)
-                        .width(900.0)
-                        .label_formatter(|_, _| String::new())
-                        .show(ui, |plot_ui| {
-                            plot_ui.line(line);
-                            plot_ui.points(scatter);
-                        });
+                if !self.expirations.is_empty() {
+                    let exp_dt = chrono::DateTime::<chrono::Utc>::from_utc(
+                        self.expirations[self.selected_expiration]
+                            .and_hms_opt(16, 0, 0)
+                            .unwrap(),
+                        chrono::Utc,
+                    );
+
+                    if let Ok((strikes, vols)) = surface.slice_by_expiration(exp_dt) {
+                        let strike_vec: Vec<f64> = strikes.iter().cloned().collect();
+                        let vol_vec: Vec<f64> = vols.iter().cloned().collect();
+                        let scatter_points: Vec<[f64; 2]> = strike_vec
+                            .iter()
+                            .zip(vol_vec.iter())
+                            .map(|(s, v)| [*s, *v])
+                            .collect();
+                        let spline_points = cubic_hermite_spline(&strike_vec, &vol_vec, 10);
+                        let line = Line::new(PlotPoints::from(spline_points));
+                        let scatter = Points::new(PlotPoints::from(scatter_points));
+
+                        Plot::new("vol_smile_plot")
+                            .height(400.0)
+                            .width(900.0)
+                            .label_formatter(|_, _| String::new())
+                            .show(ui, |plot_ui| {
+                                plot_ui.line(line);
+                                plot_ui.points(scatter);
+                            });
+                    } else {
+                        ui.label("Failed to extract smile data for the selected expiration date.");
+                        ui.label("Try selecting a different expiration date.");
+                    }
                 } else {
-                    ui.label("Failed to extract smile data");
+                    ui.label("No expiration dates available. Please try a different symbol.");
                 }
             } else if !self.has_expirations {
                 ui.label("Enter a ticker symbol and click 'Fetch Options Chain' to start.");
