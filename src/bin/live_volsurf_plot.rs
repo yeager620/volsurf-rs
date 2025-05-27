@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::plot::{Line, Plot, PlotPoints, Points};
+use egui::plot::{Line, Plot, PlotPoints, Points, PlotBounds, VLine, GridMark};
 use options_rs::api::RestClient;
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
@@ -349,8 +349,13 @@ impl eframe::App for VolatilitySurfaceApp {
                                 // Sort by distance from ATM
                                 strike_vol_dist.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
+                                // Create a unique plot ID based on ticker and expiration to ensure auto-scaling
+                                let plot_id = format!("vol_smile_plot_{}_{}",
+                                                     self.ticker_input,
+                                                     self.expirations[self.selected_expiration].format("%Y-%m-%d"));
+
                                 // Create a plot with auto-scaling to ATM
-                                let mut plot = Plot::new("vol_smile_plot")
+                                let mut plot = Plot::new(plot_id)
                                     .height(400.0)
                                     .width(900.0)
                                     .label_formatter(|_, _| String::new());
@@ -403,31 +408,49 @@ impl eframe::App for VolatilitySurfaceApp {
                             // Term Structure View - plot volatility vs time for a single strike
                             if let Some(strike) = self.selected_strike {
                                 if let Ok((times, vols)) = surface.slice_by_strike(strike) {
-                                    let time_vec: Vec<f64> = times.iter().cloned().collect();
                                     let vol_vec: Vec<f64> = vols.iter().cloned().collect();
 
-                                    // Create a plot for term structure
-                                    let plot = Plot::new("term_structure_plot")
+                                    // Right before building the term-structure points:
+                                    let today = chrono::Utc::now().date_naive();
+                                    let date_offsets: Vec<f64> = surface.expirations
+                                        .iter()
+                                        .map(|d| (d.date_naive().signed_duration_since(today)).num_days() as f64)
+                                        .collect();
+
+                                    // Create points for the plot using date offsets
+                                    let mut points: Vec<[f64; 2]> = date_offsets
+                                        .iter()
+                                        .zip(vol_vec.iter())
+                                        .map(|(dx, v)| [*dx, *v])
+                                        .collect();
+
+                                    // Sort points by date offset
+                                    points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
+
+                                    // Extract sorted x and y values for spline
+                                    let (x_vals, y_vals): (Vec<f64>, Vec<f64>) = points
+                                        .iter()
+                                        .map(|p| (p[0], p[1]))
+                                        .unzip();
+
+                                    // Create a unique plot ID based on ticker and strike to ensure auto-scaling
+                                    let plot_id = format!("term_structure_plot_{}_{}",
+                                                         self.ticker_input, strike);
+
+                                    // Create a plot for term structure with auto-scaling
+                                    let plot = Plot::new(plot_id)
                                         .height(400.0)
                                         .width(900.0)
-                                        .label_formatter(|_, _| String::new());
+                                        .include_x(0.0)  // make sure "today" is visible
+                                        .x_axis_formatter(move |value: f64, _range: &std::ops::RangeInclusive<f64>| {
+                                            // Convert days offset back to a date
+                                            let d = today + chrono::Duration::days(value.round() as i64);
+                                            d.format("%b %d").to_string()  // e.g. "Jun 21"
+                                        });
 
                                     plot.show(ui, |plot_ui| {
-                                        // Create points for the plot
-                                        let mut points: Vec<[f64; 2]> = time_vec
-                                            .iter()
-                                            .zip(vol_vec.iter())
-                                            .map(|(t, v)| [*t, *v])
-                                            .collect();
-
-                                        // Sort points by time
-                                        points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
-
-                                        // Extract sorted x and y values for spline
-                                        let (x_vals, y_vals): (Vec<f64>, Vec<f64>) = points
-                                            .iter()
-                                            .map(|p| (p[0], p[1]))
-                                            .unzip();
+                                        // Add vertical line at x = 0 to represent "today"
+                                        plot_ui.vline(VLine::new(0.0));
 
                                         // Create spline for smooth curve
                                         let spline_points = cubic_hermite_spline(&x_vals, &y_vals, 10);
@@ -439,6 +462,9 @@ impl eframe::App for VolatilitySurfaceApp {
                                             .radius(3.0)
                                             .color(egui::Color32::from_rgb(0, 100, 139)); // Dark blue
                                         plot_ui.points(scatter);
+
+                                        // Request repaint to ensure the view refreshes in the same frame
+                                        ctx.request_repaint();
                                     });
                                 } else {
                                     ui.label("Failed to extract term structure data for the selected strike price.");

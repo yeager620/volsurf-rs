@@ -18,7 +18,6 @@ pub struct Asset {
     pub name: String,
 }
 
-// Define proper types for API responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionContract {
     pub id: String,
@@ -33,7 +32,7 @@ pub struct OptionContract {
     #[serde(rename = "type")]
     pub contract_type: String,
     pub style: String,
-    pub strike_price: String, // Note: API returns this as a string "5", not a number
+    pub strike_price: String,
     pub multiplier: String,
     pub size: String,
     pub open_interest: Option<String>,
@@ -244,7 +243,6 @@ impl RestClient {
         Ok(assets)
     }
 
-    /// Get option contracts for an underlying symbol
     pub async fn get_options_chain(
         &self,
         symbol: &str,
@@ -290,7 +288,6 @@ impl RestClient {
             url.push_str(&format!("&offset={}", offset_val));
         }
 
-        // Add a timeout to prevent hanging indefinitely
         let resp = self
             .auth(self.client.get(&url))
             .timeout(std::time::Duration::from_secs(30)) // 30 second timeout
