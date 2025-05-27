@@ -175,7 +175,7 @@ impl RestClient {
 
     pub async fn get_account(&self) -> Result<Account> {
         debug!("Getting account information");
-        let url = format!("{}/v2/account", self.config.base_url);
+        let url = format!("{}/v2/account", self.config.paper_url);
         let resp = self
             .auth(self.client.get(&url))
             .send()
@@ -190,7 +190,7 @@ impl RestClient {
 
     pub async fn get_assets(&self, asset_class: Option<&str>) -> Result<Vec<Asset>> {
         debug!("Getting assets");
-        let mut url = format!("{}/v2/assets", self.config.base_url);
+        let mut url = format!("{}/v2/assets", self.config.paper_url);
         if let Some(class) = asset_class {
             url.push_str(&format!("?asset_class={}", class));
         }
@@ -221,7 +221,7 @@ impl RestClient {
         info!("Getting option contracts for {}", symbol);
         let mut url = format!(
             "{}/v2/options/contracts?underlying_symbols={}",
-            self.config.data_url, symbol
+            self.config.paper_url, symbol
         );
 
         if let Some(date) = expiration_date {
