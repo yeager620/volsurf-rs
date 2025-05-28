@@ -1,0 +1,76 @@
+[package]
+name = "options_core"
+edition = "2021"
+version = "0.1.0"
+
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["native"]
+native = ["tokio/full", "polars"]
+wasm = ["wasm-bindgen", "console_error_panic_hook"]
+
+[dependencies]
+tokio = { version = "1", optional = true, features = ["macros", "rt-multi-thread"] }
+polars = { version = "0.35", optional = true, features = ["lazy", "parquet", "ipc", "dtype-datetime", "temporal", "serde", "performant"] }
+
+serde = { version = "1.0", features = ["derive"], optional = false }
+serde_json = "1.0"
+thiserror = "2.0.12"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+tokio-tungstenite = { version = "0.26.2", features = ["native-tls"], optional = true }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dependencies.ndarray]
+version = "0.15"
+features = ["serde"]
+
+[dependencies.statrs]
+version = "0.16"
+
+[dependencies.futures]
+version = "0.3"
+
+[dependencies.plotters]
+version = "0.3.7"
+
+[dependencies.plotters-bitmap]
+version = "0.3"
+
+[dependencies.colorous]
+version = "1.0.10"
+
+
+
+[dependencies.rayon]
+version = "1.7"
+optional = true
+
+[dependencies.image]
+version = "0.25.6"
+optional = true
+
+[dependencies.once_cell]
+version = "1"
+
+[dependencies.governor]
+version = "0.10.0"
+optional = true
+
+[dependencies.nonzero_ext]
+version = "0.3"
+optional = true
+
+
+[dependencies.url]
+version = "2.5.4"
+optional = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "wasm"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt"] }

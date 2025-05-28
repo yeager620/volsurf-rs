@@ -1,13 +1,13 @@
 use eframe::egui;
 use egui_plot::{GridMark, Line, Plot, PlotPoints, Points, VLine};
-use options_rs::api::OptionGreeks;
-use options_rs::api::RestClient;
-use options_rs::config::Config;
-use options_rs::error::{OptionsError, Result};
-use options_rs::models::volatility::ImpliedVolatility;
-use options_rs::models::volatility::VolatilitySurface;
-use options_rs::models::{OptionContract, OptionQuote};
-use options_rs::utils::{self};
+use options_core::api::OptionGreeks;
+use options_core::api::RestClient;
+use options_core::config::Config;
+use options_core::error::{OptionsError, Result};
+use options_core::models::volatility::ImpliedVolatility;
+use options_core::models::volatility::VolatilitySurface;
+use options_core::models::{OptionContract, OptionQuote};
+use options_core::utils::{self};
 use std::cmp::Ordering;
 
 use chrono::TimeZone;
@@ -630,8 +630,8 @@ pub fn parse_options_chain(data: &Value) -> Result<Vec<OptionContract>> {
                     if let Ok(exp_date) = chrono::DateTime::parse_from_rfc3339(expiration) {
                         let exp_utc = exp_date.with_timezone(&chrono::Utc);
                         let option_type = match option_type {
-                            "call" => options_rs::models::OptionType::Call,
-                            "put" => options_rs::models::OptionType::Put,
+                            "call" => options_core::models::OptionType::Call,
+                            "put" => options_core::models::OptionType::Put,
                             _ => continue,
                         };
 
