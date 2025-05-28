@@ -1,6 +1,5 @@
 use eframe::egui;
 use egui_plot::{GridMark, Line, Plot, PlotPoints, Points, VLine};
-use std::cmp::Ordering;
 use options_rs::api::OptionGreeks;
 use options_rs::api::RestClient;
 use options_rs::config::Config;
@@ -9,6 +8,7 @@ use options_rs::models::volatility::ImpliedVolatility;
 use options_rs::models::volatility::VolatilitySurface;
 use options_rs::models::{OptionContract, OptionQuote};
 use options_rs::utils::{self};
+use std::cmp::Ordering;
 
 use chrono::TimeZone;
 use dashmap::DashMap;
@@ -180,7 +180,11 @@ struct VolatilitySurfaceApp {
 }
 
 impl VolatilitySurfaceApp {
-    fn find_nearest_contract(&self, strike: f64, exp: chrono::NaiveDate) -> Option<OptionQuoteWithIV> {
+    fn find_nearest_contract(
+        &self,
+        strike: f64,
+        exp: chrono::NaiveDate,
+    ) -> Option<OptionQuoteWithIV> {
         self.quotes
             .iter()
             .filter(|q| q.quote.contract.expiration.date_naive() == exp)
@@ -192,13 +196,21 @@ impl VolatilitySurfaceApp {
             .cloned()
     }
 
-    fn find_nearest_by_expiration(&self, strike: f64, exp: chrono::NaiveDate) -> Option<OptionQuoteWithIV> {
+    fn find_nearest_by_expiration(
+        &self,
+        strike: f64,
+        exp: chrono::NaiveDate,
+    ) -> Option<OptionQuoteWithIV> {
         self.quotes
             .iter()
             .filter(|q| (q.quote.contract.strike - strike).abs() < f64::EPSILON)
             .min_by(|a, b| {
-                let adiff = (a.quote.contract.expiration.date_naive() - exp).num_days().abs();
-                let bdiff = (b.quote.contract.expiration.date_naive() - exp).num_days().abs();
+                let adiff = (a.quote.contract.expiration.date_naive() - exp)
+                    .num_days()
+                    .abs();
+                let bdiff = (b.quote.contract.expiration.date_naive() - exp)
+                    .num_days()
+                    .abs();
                 adiff.cmp(&bdiff)
             })
             .cloned()
