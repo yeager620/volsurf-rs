@@ -166,6 +166,12 @@ enum ViewMode {
     TermStructure,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum DisplayMode {
+    Volatility,
+    Probability,
+}
+
 struct VolatilitySurfaceApp {
     ticker_input: String,
     status: String,
@@ -180,6 +186,7 @@ struct VolatilitySurfaceApp {
     expiry_selected: bool,
     underlying_price: Option<f64>,
     view_mode: ViewMode,
+    display_mode: DisplayMode,
     selected_strike: Option<f64>,
     quotes: Vec<OptionQuoteWithIV>,
     selected_contract: Option<OptionQuoteWithIV>,
@@ -221,6 +228,68 @@ impl VolatilitySurfaceApp {
                 adiff.cmp(&bdiff)
             })
             .cloned()
+    }
+
+    fn probability_density(
+        &self,
+        exp: chrono::NaiveDate,
+        risk_free_rate: f64,
+    ) -> Option<Vec<[f64; 2]>> {
+        let mut calls: Vec<(f64, f64, f64)> = self
+            .quotes
+            .iter()
+            .filter(|q| {
+                q.quote.contract.expiration.date_naive() == exp && q.quote.contract.is_call()
+            })
+            .map(|q| {
+                (
+                    q.quote.contract.strike,
+                    q.quote.mid_price(),
+                    q.quote.contract.time_to_expiration(),
+                )
+            })
+            .collect();
+
+        if calls.len() < 3 {
+            return None;
+        }
+
+        calls.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal));
+        let t = calls[0].2;
+        if t <= 0.0 {
+            return None;
+        }
+        let disc = (risk_free_rate * t).exp();
+
+        let n = calls.len();
+        let mut pdf = Vec::new();
+        pdf.push([calls[0].0, 0.0]);
+        for i in 1..n - 1 {
+            let (k_prev, c_prev, _) = calls[i - 1];
+            let (k, c, _) = calls[i];
+            let (k_next, c_next, _) = calls[i + 1];
+            let d1 = (c_next - c) / (k_next - k);
+            let d2 = (c - c_prev) / (k - k_prev);
+            let second = 2.0 * (d1 - d2) / (k_next - k_prev);
+            let mut val = second * disc;
+            if val.is_sign_negative() {
+                val = 0.0;
+            }
+            pdf.push([k, val]);
+        }
+        pdf.push([calls[n - 1].0, 0.0]);
+
+        let mut integral = 0.0;
+        for i in 1..pdf.len() {
+            let dx = pdf[i][0] - pdf[i - 1][0];
+            integral += 0.5 * (pdf[i - 1][1] + pdf[i][1]) * dx;
+        }
+        if integral > 0.0 {
+            for p in &mut pdf {
+                p[1] /= integral;
+            }
+        }
+        Some(pdf)
     }
 }
 
@@ -424,6 +493,14 @@ impl eframe::App for VolatilitySurfaceApp {
                     ViewMode::TermStructure => self.selected_strike.is_some(),
                 };
 
+                if can_show_plot && self.view_mode == ViewMode::VolatilitySkew {
+                    ui.horizontal(|ui| {
+                        ui.label("Display:");
+                        ui.radio_value(&mut self.display_mode, DisplayMode::Volatility, "Vol View");
+                        ui.radio_value(&mut self.display_mode, DisplayMode::Probability, "Probability View");
+                    });
+                }
+
                 if can_show_plot {
 
                     match self.view_mode {
@@ -463,30 +540,40 @@ impl eframe::App for VolatilitySurfaceApp {
                             }
 
                             plot.show(ui, |plot_ui| {
-                                let surfaces = [
-                                    (self.call_surface.as_ref(), egui::Color32::from_rgb(0, 100, 139)),
-                                    (self.put_surface.as_ref(), egui::Color32::from_rgb(139, 0, 0)),
-                                ];
-                                for (surface_opt, color) in surfaces {
-                                    if let Some(surface) = surface_opt {
-                                        if let Ok((strikes, vols)) = surface.slice_by_expiration(exp_dt) {
-                                            let strike_vec: Vec<f64> = strikes.iter().cloned().collect();
-                                            let vol_vec: Vec<f64> = vols.iter().cloned().collect();
-                                            let spline_points = cubic_hermite_spline(&strike_vec, &vol_vec, 10);
-                                            let line = Line::new(PlotPoints::from(spline_points)).color(color);
-                                            plot_ui.line(line);
-                                            let points: Vec<[f64; 2]> = strike_vec
-                                                .iter()
-                                                .zip(vol_vec.iter())
-                                                .map(|(s, v)| [*s, *v])
-                                                .collect();
-                                            let scatter = Points::new(PlotPoints::from(points)).radius(3.0).color(color);
-                                            plot_ui.points(scatter);
+                                if self.display_mode == DisplayMode::Volatility {
+                                    let surfaces = [
+                                        (self.call_surface.as_ref(), egui::Color32::from_rgb(0, 100, 139)),
+                                        (self.put_surface.as_ref(), egui::Color32::from_rgb(139, 0, 0)),
+                                    ];
+                                    for (surface_opt, color) in surfaces {
+                                        if let Some(surface) = surface_opt {
+                                            if let Ok((strikes, vols)) = surface.slice_by_expiration(exp_dt) {
+                                                let strike_vec: Vec<f64> = strikes.iter().cloned().collect();
+                                                let vol_vec: Vec<f64> = vols.iter().cloned().collect();
+                                                let spline_points = cubic_hermite_spline(&strike_vec, &vol_vec, 10);
+                                                let line = Line::new(PlotPoints::from(spline_points)).color(color);
+                                                plot_ui.line(line);
+                                                let points: Vec<[f64; 2]> = strike_vec
+                                                    .iter()
+                                                    .zip(vol_vec.iter())
+                                                    .map(|(s, v)| [*s, *v])
+                                                    .collect();
+                                                let scatter = Points::new(PlotPoints::from(points)).radius(3.0).color(color);
+                                                plot_ui.points(scatter);
+                                            }
                                         }
                                     }
+                                } else if let Some(pdf_points) = self.probability_density(self.expirations[self.selected_expiration], 0.03) {
+                                    let strikes: Vec<f64> = pdf_points.iter().map(|p| p[0]).collect();
+                                    let vals: Vec<f64> = pdf_points.iter().map(|p| p[1]).collect();
+                                    let spline_points = cubic_hermite_spline(&strikes, &vals, 10);
+                                    let line = Line::new(PlotPoints::from(spline_points)).color(egui::Color32::from_rgb(0, 128, 0));
+                                    plot_ui.line(line);
+                                    let scatter = Points::new(PlotPoints::from(pdf_points)).radius(3.0).color(egui::Color32::from_rgb(0, 128, 0));
+                                    plot_ui.points(scatter);
                                 }
 
-                                if plot_ui.response().clicked() {
+                                if plot_ui.response().clicked() && self.display_mode == DisplayMode::Volatility {
                                     if let Some(pointer) = plot_ui.pointer_coordinate() {
                                         let exp = self.expirations[self.selected_expiration];
                                         if let Some(c) = self.find_nearest_contract(pointer.x, exp) {
@@ -1099,6 +1186,7 @@ async fn main() -> Result<()> {
         expiry_selected: false,
         underlying_price: None,
         view_mode: ViewMode::VolatilitySkew,
+        display_mode: DisplayMode::Volatility,
         selected_strike: None,
         quotes: Vec::new(),
         selected_contract: None,
