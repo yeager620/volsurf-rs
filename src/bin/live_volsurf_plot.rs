@@ -438,8 +438,8 @@ impl eframe::App for VolatilitySurfaceApp {
                             let underlying = self.underlying_price.unwrap_or(0.0);
 
                             let plot_id = format!("vol_smile_plot_{}_{}",
-                                                 self.ticker_input,
-                                                 self.expirations[self.selected_expiration].format("%Y-%m-%d"));
+                                                  self.ticker_input,
+                                                  self.expirations[self.selected_expiration].format("%Y-%m-%d"));
 
                             let mut plot = Plot::new(plot_id)
                                 .height(400.0)
@@ -452,13 +452,13 @@ impl eframe::App for VolatilitySurfaceApp {
                                 let max_strike = underlying + strike_range;
 
                                 plot = plot.include_x(underlying)
-                                           .include_x(min_strike)
-                                           .include_x(max_strike);
+                                    .include_x(min_strike)
+                                    .include_x(max_strike);
 
                                 let step = strike_range / 5.0;
                                 for i in 1..5 {
                                     plot = plot.include_x(underlying - i as f64 * step)
-                                               .include_x(underlying + i as f64 * step);
+                                        .include_x(underlying + i as f64 * step);
                                 }
                             }
 
@@ -1009,8 +1009,8 @@ async fn run_volatility_surface_plot(
         tokio::task::spawn_blocking(move || {
             calculate_call_put_surfaces_with_iv(&quotes_clone, &symbol_clone, risk_free_rate)
         })
-        .await
-        .map_err(|e| OptionsError::Other(format!("Failed to calculate surfaces: {}", e)))??
+            .await
+            .map_err(|e| OptionsError::Other(format!("Failed to calculate surfaces: {}", e)))??
     };
 
     let plot_data = PlotData {
@@ -1115,11 +1115,11 @@ async fn main() -> Result<()> {
         native_options,
         Box::new(|_cc| Ok(Box::new(app))),
     )
-    .map_err(|e| {
-        let err_msg = format!("Failed to start GUI: {}", e);
-        warn!("{}", err_msg);
-        OptionsError::Other(err_msg)
-    })?;
+        .map_err(|e| {
+            let err_msg = format!("Failed to start GUI: {}", e);
+            warn!("{}", err_msg);
+            OptionsError::Other(err_msg)
+        })?;
 
     info!("shutting down");
     Ok(())
