@@ -31,7 +31,8 @@ static RATE_LIMIT_RESET: Lazy<std::sync::Mutex<Option<chrono::DateTime<chrono::U
     Lazy::new(|| std::sync::Mutex::new(None));
 
 struct PlotData {
-    surface: Arc<VolatilitySurface>,
+    call_surface: Option<Arc<VolatilitySurface>>,
+    put_surface: Option<Arc<VolatilitySurface>>,
     expirations: Vec<chrono::NaiveDate>,
     underlying_price: f64,
     quotes: Vec<OptionQuoteWithIV>,
@@ -114,6 +115,45 @@ fn calculate_volatility_surface_with_iv(
     Ok(surface)
 }
 
+fn calculate_call_put_surfaces_with_iv(
+    quotes_with_iv: &[OptionQuoteWithIV],
+    symbol: &str,
+    risk_free_rate: f64,
+) -> Result<(Option<VolatilitySurface>, Option<VolatilitySurface>)> {
+    let call_quotes: Vec<_> = quotes_with_iv
+        .iter()
+        .cloned()
+        .filter(|q| q.quote.contract.is_call())
+        .collect();
+    let put_quotes: Vec<_> = quotes_with_iv
+        .iter()
+        .cloned()
+        .filter(|q| q.quote.contract.is_put())
+        .collect();
+
+    let call_surface = if call_quotes.is_empty() {
+        None
+    } else {
+        Some(calculate_volatility_surface_with_iv(
+            &call_quotes,
+            symbol,
+            risk_free_rate,
+        )?)
+    };
+
+    let put_surface = if put_quotes.is_empty() {
+        None
+    } else {
+        Some(calculate_volatility_surface_with_iv(
+            &put_quotes,
+            symbol,
+            risk_free_rate,
+        )?)
+    };
+
+    Ok((call_surface, put_surface))
+}
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum ViewMode {
     VolatilitySkew,
@@ -126,7 +166,8 @@ struct VolatilitySurfaceApp {
     ticker_sender: mpsc::Sender<(String, Option<chrono::NaiveDate>, Option<ViewMode>)>,
     plot_receiver: mpsc::Receiver<PlotData>,
     expirations_receiver: mpsc::Receiver<ExpirationsData>,
-    surface: Option<Arc<VolatilitySurface>>,
+    call_surface: Option<Arc<VolatilitySurface>>,
+    put_surface: Option<Arc<VolatilitySurface>>,
     expirations: Vec<chrono::NaiveDate>,
     selected_expiration: usize,
     has_expirations: bool,
@@ -178,7 +219,8 @@ impl eframe::App for VolatilitySurfaceApp {
 
         while let Ok(plot_data) = self.plot_receiver.try_recv() {
             self.status = "Received new plot data".to_string();
-            self.surface = Some(plot_data.surface);
+            self.call_surface = plot_data.call_surface;
+            self.put_surface = plot_data.put_surface;
             self.underlying_price = Some(plot_data.underlying_price);
             self.quotes = plot_data.quotes;
             self.selected_contract = None;
@@ -204,7 +246,8 @@ impl eframe::App for VolatilitySurfaceApp {
                         self.status = format!("Fetching contracts for {}", ticker);
                         self.has_expirations = false;
 
-                        self.surface = None;
+                        self.call_surface = None;
+                        self.put_surface = None;
                         self.underlying_price = None;
                         self.expiry_selected = false;
 
@@ -230,7 +273,8 @@ impl eframe::App for VolatilitySurfaceApp {
                         if self.view_mode == ViewMode::TermStructure && !self.ticker_input.trim().is_empty() {
                             let ticker = self.ticker_input.trim().to_uppercase();
                             self.status = format!("Fetching all option data for {}", ticker);
-                            self.surface = None;
+                            self.call_surface = None;
+                            self.put_surface = None;
                             ctx.request_repaint();
                             if let Err(e) = self.ticker_sender.try_send((ticker, None, Some(self.view_mode))) {
                                 self.status = format!("Error: {}", e);
@@ -265,7 +309,8 @@ impl eframe::App for VolatilitySurfaceApp {
                                         self.expiry_selected = true;
                                         let ticker = self.ticker_input.trim().to_uppercase();
                                         self.status = format!("Fetching data for {} exp {}", ticker, exp.format("%Y-%m-%d"));
-                                        self.surface = None;
+                                        self.call_surface = None;
+                                        self.put_surface = None;
                                         ctx.request_repaint();
                                         if let Err(e) = self.ticker_sender.try_send((ticker, Some(*exp), Some(self.view_mode))) {
                                             self.status = format!("Error: {}", e);
@@ -278,8 +323,19 @@ impl eframe::App for VolatilitySurfaceApp {
                     ui.horizontal(|ui| {
                         ui.label("Strike Price:");
 
-                        if let Some(ref surface) = self.surface {
-                            let strikes: Vec<f64> = surface.strikes.clone();
+                        if self.call_surface.is_some() || self.put_surface.is_some() {
+                            let mut strikes: Vec<f64> = Vec::new();
+                            if let Some(ref surface) = self.call_surface {
+                                strikes.extend(surface.strikes.clone());
+                            }
+                            if let Some(ref surface) = self.put_surface {
+                                for s in &surface.strikes {
+                                    if !strikes.contains(s) {
+                                        strikes.push(*s);
+                                    }
+                                }
+                            }
+                            strikes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
 
                             if !strikes.is_empty() {
                                 if self.selected_strike.is_none() {
@@ -332,7 +388,7 @@ impl eframe::App for VolatilitySurfaceApp {
             }
 
 
-            if let Some(ref surface) = self.surface {
+            if self.call_surface.is_some() || self.put_surface.is_some() {
 
 
 
@@ -356,165 +412,129 @@ impl eframe::App for VolatilitySurfaceApp {
                             let exp_dt = chrono::Utc.from_utc_datetime(
                                 &self.expirations[self.selected_expiration]
                                     .and_hms_opt(16, 0, 0)
-                                    .unwrap()
+                                    .unwrap(),
                             );
 
-                            if let Ok((strikes, vols)) = surface.slice_by_expiration(exp_dt) {
-                                let strike_vec: Vec<f64> = strikes.iter().cloned().collect();
-                                let vol_vec: Vec<f64> = vols.iter().cloned().collect();
+                            let underlying = self.underlying_price.unwrap_or(0.0);
 
+                            let plot_id = format!("vol_smile_plot_{}_{}",
+                                                 self.ticker_input,
+                                                 self.expirations[self.selected_expiration].format("%Y-%m-%d"));
 
-                                let underlying = self.underlying_price.unwrap_or(0.0);
+                            let mut plot = Plot::new(plot_id)
+                                .height(400.0)
+                                .width(900.0)
+                                .label_formatter(|_, _| String::new());
 
+                            if underlying > 0.0 {
+                                let strike_range = 0.2 * underlying;
+                                let min_strike = underlying - strike_range;
+                                let max_strike = underlying + strike_range;
 
-                                let mut strike_vol_dist: Vec<(f64, f64, f64)> = strike_vec
-                                    .iter()
-                                    .zip(vol_vec.iter())
-                                    .map(|(s, v)| (*s, *v, (s - underlying).abs()))
-                                    .collect();
+                                plot = plot.include_x(underlying)
+                                           .include_x(min_strike)
+                                           .include_x(max_strike);
 
+                                let step = strike_range / 5.0;
+                                for i in 1..5 {
+                                    plot = plot.include_x(underlying - i as f64 * step)
+                                               .include_x(underlying + i as f64 * step);
+                                }
+                            }
 
-                                strike_vol_dist.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
-
-
-                                let plot_id = format!("vol_smile_plot_{}_{}",
-                                                     self.ticker_input,
-                                                     self.expirations[self.selected_expiration].format("%Y-%m-%d"));
-
-
-                                let mut plot = Plot::new(plot_id)
-                                    .height(400.0)
-                                    .width(900.0)
-                                    .label_formatter(|_, _| String::new());
-
-
-                                if underlying > 0.0 {
-
-                                    let strike_range = 0.2 * underlying;
-                                    let min_strike = underlying - strike_range;
-                                    let max_strike = underlying + strike_range;
-
-
-
-                                    plot = plot.include_x(underlying)
-                                               .include_x(min_strike)
-                                               .include_x(max_strike);
-
-
-                                    let step = strike_range / 5.0;
-                                    for i in 1..5 {
-                                        plot = plot.include_x(underlying - i as f64 * step)
-                                                   .include_x(underlying + i as f64 * step);
+                            plot.show(ui, |plot_ui| {
+                                let surfaces = [
+                                    (self.call_surface.as_ref(), egui::Color32::from_rgb(0, 100, 139)),
+                                    (self.put_surface.as_ref(), egui::Color32::from_rgb(139, 0, 0)),
+                                ];
+                                for (surface_opt, color) in surfaces {
+                                    if let Some(surface) = surface_opt {
+                                        if let Ok((strikes, vols)) = surface.slice_by_expiration(exp_dt) {
+                                            let strike_vec: Vec<f64> = strikes.iter().cloned().collect();
+                                            let vol_vec: Vec<f64> = vols.iter().cloned().collect();
+                                            let spline_points = cubic_hermite_spline(&strike_vec, &vol_vec, 10);
+                                            let line = Line::new(PlotPoints::from(spline_points)).color(color);
+                                            plot_ui.line(line);
+                                            let points: Vec<[f64; 2]> = strike_vec
+                                                .iter()
+                                                .zip(vol_vec.iter())
+                                                .map(|(s, v)| [*s, *v])
+                                                .collect();
+                                            let scatter = Points::new(PlotPoints::from(points)).radius(3.0).color(color);
+                                            plot_ui.points(scatter);
+                                        }
                                     }
                                 }
 
+                                if plot_ui.response().clicked() {
+                                    if let Some(pointer) = plot_ui.pointer_coordinate() {
+                                        let exp = self.expirations[self.selected_expiration];
+                                        if let Some(c) = self.find_nearest_contract(pointer.x, exp) {
+                                            self.selected_contract = Some(c);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        ViewMode::TermStructure => {
+
+                            if let Some(strike) = self.selected_strike {
+                                let today = chrono::Utc::now().date_naive();
+                                let plot_id = format!("term_structure_plot_{}_{}", self.ticker_input, strike);
+
+                                let plot = Plot::new(plot_id)
+                                    .height(400.0)
+                                    .width(900.0)
+                                    .include_x(0.0)
+                                    .x_axis_formatter(move |grid_mark: GridMark, _| {
+                                        let d = today + chrono::Duration::days(grid_mark.value.round() as i64);
+                                        d.format("%b %d").to_string()
+                                    });
+
                                 plot.show(ui, |plot_ui| {
+                                    plot_ui.vline(VLine::new(0.0));
 
-                                    let spline_points = cubic_hermite_spline(&strike_vec, &vol_vec, 10);
-                                    let line = Line::new(PlotPoints::from(spline_points));
-                                    plot_ui.line(line);
+                                    let surfaces = [
+                                        (self.call_surface.as_ref(), egui::Color32::from_rgb(0, 100, 139)),
+                                        (self.put_surface.as_ref(), egui::Color32::from_rgb(139, 0, 0)),
+                                    ];
+                                    for (surface_opt, color) in surfaces {
+                                        if let Some(surface) = surface_opt {
+                                            if let Ok((_, vols)) = surface.slice_by_strike(strike) {
+                                                let y_vals: Vec<f64> = vols.iter().cloned().collect();
+                                                let x_vals: Vec<f64> = surface
+                                                    .expirations
+                                                    .iter()
+                                                    .map(|d| (d.date_naive().signed_duration_since(today)).num_days() as f64)
+                                                    .collect();
 
+                                                let spline_points = cubic_hermite_spline(&x_vals, &y_vals, 10);
+                                                let line = Line::new(PlotPoints::from(spline_points)).color(color);
+                                                plot_ui.line(line);
 
-
-                                    let all_points: Vec<[f64; 2]> = strike_vol_dist
-                                        .iter()
-                                        .map(|(s, v, _)| [*s, *v])
-                                        .collect();
-
-                                    let scatter = Points::new(PlotPoints::from(all_points))
-                                        .radius(3.0)
-                                        .color(egui::Color32::from_rgb(139, 0, 0));
-                                    plot_ui.points(scatter);
+                                                let points: Vec<[f64; 2]> = x_vals
+                                                    .iter()
+                                                    .zip(y_vals.iter())
+                                                    .map(|(x, v)| [*x, *v])
+                                                    .collect();
+                                                let scatter = Points::new(PlotPoints::from(points)).radius(3.0).color(color);
+                                                plot_ui.points(scatter);
+                                            }
+                                        }
+                                    }
 
                                     if plot_ui.response().clicked() {
                                         if let Some(pointer) = plot_ui.pointer_coordinate() {
-                                            let exp = self.expirations[self.selected_expiration];
-                                            if let Some(c) = self.find_nearest_contract(pointer.x, exp) {
+                                            let day = pointer.x.round() as i64;
+                                            let exp = today + chrono::Duration::days(day);
+                                            if let Some(c) = self.find_nearest_by_expiration(strike, exp) {
                                                 self.selected_contract = Some(c);
                                             }
                                         }
                                     }
+
+                                    ctx.request_repaint();
                                 });
-                            } else {
-                                ui.label("Failed to extract smile data for the selected expiration date.");
-                                ui.label("Try selecting a different expiration date.");
-                            }
-                        },
-                        ViewMode::TermStructure => {
-
-                            if let Some(strike) = self.selected_strike {
-                                if let Ok((times, vols)) = surface.slice_by_strike(strike) {
-                                    let vol_vec: Vec<f64> = vols.iter().cloned().collect();
-
-
-                                    let today = chrono::Utc::now().date_naive();
-                                    let date_offsets: Vec<f64> = surface.expirations
-                                        .iter()
-                                        .map(|d| (d.date_naive().signed_duration_since(today)).num_days() as f64)
-                                        .collect();
-
-
-                                    let mut points: Vec<[f64; 2]> = date_offsets
-                                        .iter()
-                                        .zip(vol_vec.iter())
-                                        .map(|(dx, v)| [*dx, *v])
-                                        .collect();
-
-
-                                    points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal));
-
-
-                                    let (x_vals, y_vals): (Vec<f64>, Vec<f64>) = points
-                                        .iter()
-                                        .map(|p| (p[0], p[1]))
-                                        .unzip();
-
-
-                                    let plot_id = format!("term_structure_plot_{}_{}",
-                                                         self.ticker_input, strike);
-
-
-                                    let plot = Plot::new(plot_id)
-                                        .height(400.0)
-                                        .width(900.0)
-                                        .include_x(0.0)
-                                        .x_axis_formatter(move |grid_mark: GridMark, _range: &std::ops::RangeInclusive<f64>| {
-
-                                            let d = today + chrono::Duration::days(grid_mark.value.round() as i64);
-                                            d.format("%b %d").to_string()
-                                        });
-
-                                    plot.show(ui, |plot_ui| {
-
-                                        plot_ui.vline(VLine::new(0.0));
-
-
-                                        let spline_points = cubic_hermite_spline(&x_vals, &y_vals, 10);
-                                        let line = Line::new(PlotPoints::from(spline_points));
-                                        plot_ui.line(line);
-
-
-                                        let scatter = Points::new(PlotPoints::from(points))
-                                            .radius(3.0)
-                                            .color(egui::Color32::from_rgb(0, 100, 139));
-                                        plot_ui.points(scatter);
-
-                                        if plot_ui.response().clicked() {
-                                            if let Some(pointer) = plot_ui.pointer_coordinate() {
-                                                let day = pointer.x.round() as i64;
-                                                let exp = today + chrono::Duration::days(day);
-                                                if let Some(c) = self.find_nearest_by_expiration(strike, exp) {
-                                                    self.selected_contract = Some(c);
-                                                }
-                                            }
-                                        }
-
-                                        ctx.request_repaint();
-                                    });
-                                } else {
-                                    ui.label("Failed to extract term structure data for the selected strike price.");
-                                    ui.label("Try selecting a different strike price.");
-                                }
                             } else {
                                 ui.label("Please select a strike price to view the term structure.");
                             }
@@ -935,36 +955,19 @@ async fn run_volatility_surface_plot(
 
     let risk_free_rate = 0.03;
 
-    let timestamp = chrono::Utc::now();
-    let cache_key = (symbol.to_string(), timestamp);
-
-    let surface = if let Some(cached_surface) = SURFACE_CACHE.get(&cache_key) {
-        debug!("Using cached volatility surface for {}", symbol);
-        cached_surface.clone()
-    } else {
-        debug!("Calculating new volatility surface for {}", symbol);
-
-        let quotes_with_iv_clone = quotes_with_iv.clone();
+    let (call_surface, put_surface) = {
+        let quotes_clone = quotes_with_iv.clone();
         let symbol_clone = symbol.to_string();
-        let surface = tokio::task::spawn_blocking(move || {
-            calculate_volatility_surface_with_iv(
-                &quotes_with_iv_clone,
-                &symbol_clone,
-                risk_free_rate,
-            )
+        tokio::task::spawn_blocking(move || {
+            calculate_call_put_surfaces_with_iv(&quotes_clone, &symbol_clone, risk_free_rate)
         })
         .await
-        .map_err(|e| {
-            OptionsError::Other(format!("Failed to calculate volatility surface: {}", e))
-        })??;
-
-        let arc_surface = Arc::new(surface);
-        SURFACE_CACHE.insert(cache_key, arc_surface.clone());
-        arc_surface
+        .map_err(|e| OptionsError::Other(format!("Failed to calculate surfaces: {}", e)))??
     };
 
     let plot_data = PlotData {
-        surface,
+        call_surface: call_surface.map(Arc::new),
+        put_surface: put_surface.map(Arc::new),
         expirations,
         underlying_price,
         quotes: quotes_with_iv.clone(),
@@ -1039,7 +1042,8 @@ async fn main() -> Result<()> {
         ticker_sender,
         plot_receiver,
         expirations_receiver,
-        surface: None,
+        call_surface: None,
+        put_surface: None,
         expirations: Vec::new(),
         selected_expiration: 0,
         has_expirations: false,
