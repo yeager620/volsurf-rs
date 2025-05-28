@@ -160,7 +160,6 @@ impl WebSocketClient {
             ));
         }
 
-        // Derive WebSocket URL from data_url in configuration
         let data_url = &self.config.data_url;
         let ws_domain = if data_url.starts_with("https://") {
             data_url
@@ -183,7 +182,6 @@ impl WebSocketClient {
         let symbols_clone = symbols.clone();
         let notification_tx = self.notification_tx.clone();
 
-        // Helper function to extract status code from websocket error
         fn get_status_from_error(
             err: &tokio_tungstenite::tungstenite::Error,
         ) -> Option<reqwest::StatusCode> {
@@ -202,13 +200,14 @@ impl WebSocketClient {
                 symbols_clone.len()
             );
 
-            let (ws_stream, response) = match connect_async(url).await {
+            // Convert to string to satisfy IntoClientRequest
+            let url_str = url.to_string();
+            let (ws_stream, response) = match connect_async(url_str).await {
                 Ok(conn) => conn,
                 Err(e) => {
                     let error_msg = format!("Failed to connect to WebSocket: {}", e);
                     warn!("{}", error_msg);
 
-                    // Check if it's an HTTP error and provide more details
                     if let Some(status) = get_status_from_error(&e) {
                         warn!(
                             "HTTP error: {} {}",
@@ -232,7 +231,6 @@ impl WebSocketClient {
                 }
             };
 
-            // Log successful connection details
             info!("WebSocket connected with status: {}", response.status());
             debug!("WebSocket response headers: {:?}", response.headers());
 
@@ -249,7 +247,7 @@ impl WebSocketClient {
                 }
             };
 
-            if let Err(e) = write.send(Message::Text(auth_json)).await {
+            if let Err(e) = write.send(Message::Text(auth_json.into())).await {
                 warn!("Failed to send auth message: {}", e);
                 return;
             }
@@ -263,7 +261,7 @@ impl WebSocketClient {
                 }
             };
 
-            if let Err(e) = write.send(Message::Text(subscribe_json)).await {
+            if let Err(e) = write.send(Message::Text(subscribe_json.into())).await {
                 warn!("Failed to send subscribe message: {}", e);
                 return;
             }
@@ -274,7 +272,6 @@ impl WebSocketClient {
                         debug!("Received text message");
 
                         if text.contains(r#""T":"q""#) {
-                            // Fast path for quote messages
                             if let Ok(quote) = serde_json::from_str::<OptionQuote>(&text) {
                                 if let Some(contract) =
                                     OptionContract::from_occ_symbol(&quote.option_symbol)
@@ -291,7 +288,6 @@ impl WebSocketClient {
 
                                     match sender.try_send(model_quote) {
                                         Ok(_) => {
-                                            // Notify listeners about new data
                                             if let Err(e) = notification_tx.send(()) {
                                                 debug!("Failed to send notification: {}", e);
                                             }
@@ -301,7 +297,6 @@ impl WebSocketClient {
                                                 warn!("Failed to send quote to channel");
                                                 break;
                                             }
-                                            // Notify listeners about new data
                                             if let Err(e) = notification_tx.send(()) {
                                                 debug!("Failed to send notification: {}", e);
                                             }
@@ -376,8 +371,6 @@ impl WebSocketClient {
         }
     }
 
-    /// Get multiple quotes at once, up to the specified batch size
-    /// This is more efficient than calling next_option_quote() multiple times
     pub async fn next_option_quotes_batch(
         &self,
         max_batch_size: usize,
@@ -385,18 +378,16 @@ impl WebSocketClient {
         let mut receiver = self.data_receiver.lock().await;
         let mut quotes = Vec::with_capacity(max_batch_size);
 
-        // Get the first quote (waiting if necessary)
         if let Some(quote) = receiver.recv().await {
             quotes.push(quote);
         } else {
-            return Ok(quotes); // Channel closed, return empty vec
+            return Ok(quotes);
         }
 
-        // Try to get more quotes without waiting (up to max_batch_size)
         while quotes.len() < max_batch_size {
             match receiver.try_recv() {
                 Ok(quote) => quotes.push(quote),
-                Err(_) => break, // No more quotes available right now
+                Err(_) => break,
             }
         }
 
@@ -424,7 +415,6 @@ impl From<OptionQuote> for ModelOptionQuote {
         if let Some(contract) = OptionContract::from_occ_symbol(&quote.option_symbol) {
             Self::new(contract, quote.bp, quote.ap, mid_price, 0, 0, quote.up)
         } else {
-            // Fallback to creating a contract from available fields
             let contract = OptionContract::new(
                 quote.s.clone(),
                 quote.option_type,

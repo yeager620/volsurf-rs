@@ -1,5 +1,6 @@
 use eframe::egui;
-use egui::plot::{Line, Plot, PlotPoints, Points, PlotBounds, VLine, GridMark};
+use egui_plot::{Line, Plot, PlotPoints, Points, VLine, GridMark};
+use options_rs::api::OptionGreeks;
 use options_rs::api::RestClient;
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
@@ -12,9 +13,31 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::{info, warn, debug};
 use chrono::TimeZone;
+use std::sync::Arc;
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
+
+// Global cache for volatility surfaces
+// Key is (symbol, timestamp) to uniquely identify each surface
+static SURFACE_CACHE: Lazy<DashMap<(String, chrono::DateTime<chrono::Utc>), Arc<VolatilitySurface>>> = 
+    Lazy::new(|| DashMap::new());
+
+// Cache for risk-free rates
+// Key is date, value is the risk-free rate for that date
+static RISK_FREE_RATE_CACHE: Lazy<DashMap<chrono::NaiveDate, f64>> =
+    Lazy::new(|| DashMap::new());
+
+// Cache for contract metadata
+// Key is expiry date, value is a map of contract symbols to contract details
+static CONTRACT_METADATA_CACHE: Lazy<DashMap<chrono::NaiveDate, DashMap<String, OptionContract>>> =
+    Lazy::new(|| DashMap::new());
+
+// Cache expiry timestamp from rate limit headers
+static RATE_LIMIT_RESET: Lazy<std::sync::Mutex<Option<chrono::DateTime<chrono::Utc>>>> =
+    Lazy::new(|| std::sync::Mutex::new(None));
 
 struct PlotData {
-    surface: VolatilitySurface,
+    surface: Arc<VolatilitySurface>,
     expirations: Vec<chrono::NaiveDate>,
     underlying_price: f64,
 }
@@ -23,9 +46,11 @@ struct ExpirationsData {
     expirations: Vec<chrono::NaiveDate>,
 }
 
+#[derive(Clone)]
 struct OptionQuoteWithIV {
     quote: OptionQuote,
     implied_volatility: Option<f64>,
+    greeks: Option<OptionGreeks>,
 }
 
 fn calculate_volatility_surface_with_iv(
@@ -46,23 +71,30 @@ fn calculate_volatility_surface_with_iv(
             let underlying_price = q.quote.underlying_price;
             let time_to_expiration = contract.time_to_expiration();
 
-            // Calculate delta and vega using the implied volatility
-            let delta_value = utils::delta(
-                underlying_price,
-                contract.strike,
-                time_to_expiration,
-                risk_free_rate,
-                iv_value,
-                contract.is_call(),
-            );
+            // Use greeks from API if available, otherwise calculate them
+            let (delta_value, vega_value) = if let Some(g) = &q.greeks {
+                (g.delta, g.vega)
+            } else {
+                // Calculate delta and vega using the implied volatility
+                let delta = utils::delta(
+                    underlying_price,
+                    contract.strike,
+                    time_to_expiration,
+                    risk_free_rate,
+                    iv_value,
+                    contract.is_call(),
+                );
 
-            let vega_value = utils::vega(
-                underlying_price,
-                contract.strike,
-                time_to_expiration,
-                risk_free_rate,
-                iv_value,
-            );
+                let vega = utils::vega(
+                    underlying_price,
+                    contract.strike,
+                    time_to_expiration,
+                    risk_free_rate,
+                    iv_value,
+                );
+
+                (delta, vega)
+            };
 
             let iv = ImpliedVolatility {
                 contract: contract.clone(),
@@ -107,7 +139,7 @@ struct VolatilitySurfaceApp {
     ticker_sender: mpsc::Sender<(String, Option<chrono::NaiveDate>, Option<ViewMode>)>,
     plot_receiver: mpsc::Receiver<PlotData>,
     expirations_receiver: mpsc::Receiver<ExpirationsData>,
-    surface: Option<VolatilitySurface>,
+    surface: Option<Arc<VolatilitySurface>>,
     expirations: Vec<chrono::NaiveDate>,
     selected_expiration: usize,
     has_expirations: bool,
@@ -306,7 +338,7 @@ impl eframe::App for VolatilitySurfaceApp {
 
             // Show plot if we have surface data
             if let Some(ref surface) = self.surface {
-                _frame.set_window_size(egui::vec2(1000.0, 700.0));
+                // Window size is now set via NativeOptions
 
                 // Make sure we have a valid selected_expiration index
                 if self.selected_expiration >= self.expirations.len() && !self.expirations.is_empty() {
@@ -442,9 +474,9 @@ impl eframe::App for VolatilitySurfaceApp {
                                         .height(400.0)
                                         .width(900.0)
                                         .include_x(0.0)  // make sure "today" is visible
-                                        .x_axis_formatter(move |value: f64, _range: &std::ops::RangeInclusive<f64>| {
+                                        .x_axis_formatter(move |grid_mark: GridMark, _range: &std::ops::RangeInclusive<f64>| {
                                             // Convert days offset back to a date
-                                            let d = today + chrono::Duration::days(value.round() as i64);
+                                            let d = today + chrono::Duration::days(grid_mark.value.round() as i64);
                                             d.format("%b %d").to_string()  // e.g. "Jun 21"
                                         });
 
@@ -829,8 +861,9 @@ async fn run_volatility_surface_plot(
             };
             let timestamp = timestamp.unwrap_or_else(chrono::Utc::now);
 
-            // Get implied volatility from the API response if available
+            // Get implied volatility and greeks from the API response if available
             let implied_volatility = snap.implied_volatility;
+            let greeks = snap.greeks;
 
             // Create OptionQuote
             let quote = OptionQuote {
@@ -848,6 +881,7 @@ async fn run_volatility_surface_plot(
             quotes_with_iv.push(OptionQuoteWithIV {
                 quote,
                 implied_volatility,
+                greeks,
             });
         }
     }
@@ -863,8 +897,29 @@ async fn run_volatility_surface_plot(
 
     let risk_free_rate = 0.03;
 
-    // Use the new function that uses implied volatility directly from the API
-    let surface = calculate_volatility_surface_with_iv(&quotes_with_iv, symbol, risk_free_rate)?;
+    // Get current timestamp for cache key
+    let timestamp = chrono::Utc::now();
+    let cache_key = (symbol.to_string(), timestamp);
+
+    // Check if we already have a surface for this symbol in the cache
+    // If not, calculate a new one and store it in the cache
+    let surface = if let Some(cached_surface) = SURFACE_CACHE.get(&cache_key) {
+        debug!("Using cached volatility surface for {}", symbol);
+        cached_surface.clone()
+    } else {
+        debug!("Calculating new volatility surface for {}", symbol);
+        // Use tokio::spawn_blocking to prevent spline fitting from stalling UI thread
+        let quotes_with_iv_clone = quotes_with_iv.clone();
+        let symbol_clone = symbol.to_string();
+        let surface = tokio::task::spawn_blocking(move || {
+            calculate_volatility_surface_with_iv(&quotes_with_iv_clone, &symbol_clone, risk_free_rate)
+        }).await.map_err(|e| OptionsError::Other(format!("Failed to calculate volatility surface: {}", e)))??;
+
+        // Wrap in Arc and store in cache
+        let arc_surface = Arc::new(surface);
+        SURFACE_CACHE.insert(cache_key, arc_surface.clone());
+        arc_surface
+    };
 
     let plot_data = PlotData { 
         surface, 
@@ -948,14 +1003,14 @@ async fn main() -> Result<()> {
     };
 
     let native_options = eframe::NativeOptions {
-        initial_window_size: Some(egui::vec2(1000.0, 700.0)),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1000.0, 700.0]),
         ..Default::default()
     };
 
     eframe::run_native(
         "Live Volatility Surface Plotter",
         native_options,
-        Box::new(|_cc| Box::new(app)),
+        Box::new(|_cc| Ok(Box::new(app))),
     )
     .map_err(|e| {
         let err_msg = format!("Failed to start GUI: {}", e);

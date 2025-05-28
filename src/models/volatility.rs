@@ -262,14 +262,13 @@ impl VolatilitySurface {
     /// Update the volatility surface with new implied volatility data
     pub fn update(&mut self, new_ivs: &[ImpliedVolatility]) -> Result<bool> {
         if new_ivs.is_empty() {
-            return Ok(false); // No changes
+            return Ok(false);
         }
 
         let mut updated = false;
         let mut new_expirations = Vec::new();
         let mut new_strikes = Vec::new();
 
-        // Check for new expirations or strikes
         for iv in new_ivs {
             let exp = iv.contract.expiration;
             let strike = iv.contract.strike;
@@ -283,27 +282,22 @@ impl VolatilitySurface {
             }
         }
 
-        // If we have new dimensions, we need to resize the volatility matrix
         if !new_expirations.is_empty() || !new_strikes.is_empty() {
-            // Add new expirations
             for exp in &new_expirations {
                 self.expirations.push(*exp);
             }
             self.expirations.sort();
 
-            // Add new strikes
             for strike in &new_strikes {
                 self.strikes.push(*strike);
             }
             self.strikes
                 .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less));
 
-            // Create a new volatility matrix with the new dimensions
             let n_expirations = self.expirations.len();
             let n_strikes = self.strikes.len();
             let mut new_volatilities = Array2::from_elem((n_expirations, n_strikes), f64::NAN);
 
-            // Copy existing values to the new matrix
             for (i, exp) in self.expirations.iter().enumerate() {
                 for (j, strike) in self.strikes.iter().enumerate() {
                     let old_exp_idx = self.expirations.iter().position(|e| e == exp);
@@ -323,7 +317,6 @@ impl VolatilitySurface {
             updated = true;
         }
 
-        // Update volatility values for the new IVs
         for iv in new_ivs {
             let exp_idx = self
                 .expirations
@@ -332,7 +325,6 @@ impl VolatilitySurface {
             let strike_idx = self.strikes.iter().position(|&s| s == iv.contract.strike);
 
             if let (Some(i), Some(j)) = (exp_idx, strike_idx) {
-                // Only update if the value has changed
                 if self.volatilities[[i, j]].is_nan()
                     || (self.volatilities[[i, j]] - iv.value).abs() > 1e-6
                 {

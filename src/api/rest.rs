@@ -1,7 +1,10 @@
 use crate::config::AlpacaConfig;
 use crate::error::{OptionsError, Result};
 use chrono::{DateTime, Utc};
+use governor::{Quota, RateLimiter};
+use nonzero_ext::nonzero;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::{debug, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,6 +198,7 @@ pub struct OptionSnapshotsResponse {
 pub struct RestClient {
     client: reqwest::Client,
     config: AlpacaConfig,
+    limiter: Arc<RateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, governor::clock::DefaultClock>>,
 }
 
 impl RestClient {
@@ -202,10 +206,16 @@ impl RestClient {
         Self {
             client: reqwest::Client::new(),
             config,
+            limiter: Arc::new(governor::RateLimiter::direct(
+                Quota::per_minute(nonzero!(200u32))
+            )),
         }
     }
 
-    fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    async fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        // Wait until we have a token available
+        self.limiter.until_ready().await;
+
         req.header("APCA-API-KEY-ID", &self.config.api_key)
             .header("APCA-API-SECRET-KEY", &self.config.api_secret)
     }
@@ -215,6 +225,7 @@ impl RestClient {
         let url = format!("{}/v2/account", self.config.paper_url);
         let resp = self
             .auth(self.client.get(&url))
+            .await
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Request failed: {}", e)))?;
@@ -233,6 +244,7 @@ impl RestClient {
         }
         let resp = self
             .auth(self.client.get(&url))
+            .await
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Request failed: {}", e)))?;
@@ -290,6 +302,7 @@ impl RestClient {
 
         let resp = self
             .auth(self.client.get(&url))
+            .await
             .timeout(std::time::Duration::from_secs(30)) // 30 second timeout
             .send()
             .await
@@ -348,6 +361,7 @@ impl RestClient {
 
         let resp = self
             .auth(self.client.get(&url))
+            .await
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options bars: {}", e)))?;
@@ -398,6 +412,7 @@ impl RestClient {
 
         let resp = self
             .auth(self.client.get(&url))
+            .await
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options trades: {}", e)))?;
@@ -420,6 +435,7 @@ impl RestClient {
 
         let resp = self
             .auth(self.client.get(&url))
+            .await
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get options quotes: {}", e)))?;
@@ -462,8 +478,8 @@ impl RestClient {
             url.push_str(&format!("&page_token={}", token));
         }
 
-        let resp =
-            self.auth(self.client.get(&url)).send().await.map_err(|e| {
+        let request = self.auth(self.client.get(&url)).await;
+        let resp = request.send().await.map_err(|e| {
                 OptionsError::Other(format!("Failed to get option snapshots: {}", e))
             })?;
 
@@ -536,7 +552,8 @@ impl RestClient {
             url.push_str(&query_params.join("&"));
         }
 
-        let resp = self.auth(self.client.get(&url)).send().await.map_err(|e| {
+        let request = self.auth(self.client.get(&url)).await;
+        let resp = request.send().await.map_err(|e| {
             OptionsError::Other(format!("Failed to get option chain snapshots: {}", e))
         })?;
 
@@ -578,8 +595,8 @@ impl RestClient {
             self.config.data_url, tick_type
         );
 
-        let resp =
-            self.auth(self.client.get(&url)).send().await.map_err(|e| {
+        let request = self.auth(self.client.get(&url)).await;
+        let resp = request.send().await.map_err(|e| {
                 OptionsError::Other(format!("Failed to get condition codes: {}", e))
             })?;
 
@@ -595,8 +612,8 @@ impl RestClient {
         debug!("Getting options exchange codes");
         let url = format!("{}/v1beta1/options/meta/exchanges", self.config.data_url);
 
-        let resp = self
-            .auth(self.client.get(&url))
+        let request = self.auth(self.client.get(&url)).await;
+        let resp = request
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get exchange codes: {}", e)))?;
@@ -617,8 +634,8 @@ impl RestClient {
             self.config.data_url, symbols_str
         );
 
-        let resp = self
-            .auth(self.client.get(&url))
+        let request = self.auth(self.client.get(&url)).await;
+        let resp = request
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get latest trades: {}", e)))?;
@@ -637,8 +654,8 @@ impl RestClient {
             self.config.data_url, symbol
         );
 
-        let resp = self
-            .auth(self.client.get(&url))
+        let request = self.auth(self.client.get(&url)).await;
+        let resp = request
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get stock snapshot: {}", e)))?;
@@ -662,8 +679,8 @@ impl RestClient {
             self.config.data_url, symbols_str
         );
 
-        let resp = self
-            .auth(self.client.get(&url))
+        let request = self.auth(self.client.get(&url)).await;
+        let resp = request
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get latest stock quotes: {}", e)))?;
@@ -700,8 +717,8 @@ impl RestClient {
             url.push_str(&query_params.join("&"));
         }
 
-        let resp = self
-            .auth(self.client.get(&url))
+        let request = self.auth(self.client.get(&url)).await;
+        let resp = request
             .send()
             .await
             .map_err(|e| OptionsError::Other(format!("Failed to get latest stock quote: {}", e)))?;

@@ -61,18 +61,8 @@ impl OptionContract {
         format!("{}{}{}{}", symbol, date_str, type_char, strike_str)
     }
 
-    /// Parse OCC option symbol
     pub fn from_occ_symbol(occ_symbol: &str) -> Option<Self> {
         trace!("Parsing OCC symbol: {}", occ_symbol);
-
-        // First, try to parse the OCC symbol directly from the key
-        // Format: AAPL250530C00145000
-        // This is a direct approach to extract the underlying symbol, expiration, type, and strike
-
-        // Find the position of 'C' or 'P' to determine option type
-        // We need to be careful as the underlying symbol might contain 'C' or 'P'
-        // The option type character should be after the date part, which is 6 digits
-        // First, try to find all positions of 'C' or 'P'
         let mut type_positions = Vec::new();
         for (i, c) in occ_symbol.char_indices() {
             if c == 'C' || c == 'P' {
@@ -85,7 +75,6 @@ impl OptionContract {
             return None;
         }
 
-        // For each position, check if it's preceded by 6 digits (the date part)
         let mut valid_type_pos = None;
         for &pos in &type_positions {
             if pos >= 6 {
@@ -100,15 +89,12 @@ impl OptionContract {
         let type_pos = match valid_type_pos {
             Some(pos) => pos,
             None => {
-                // If no valid position is found, use the last position as a fallback
-                // This is more likely to be correct than the first position
                 let pos = *type_positions.last().unwrap();
                 warn!("No valid option type position found with date check, using last position {} as fallback for: {}", pos, occ_symbol);
                 pos
             }
         };
 
-        // Check if we have enough characters for a valid date part (at least 6 characters)
         if type_pos < 6 {
             warn!(
                 "OCC symbol too short for date part: {} (type_pos={})",
@@ -117,22 +103,15 @@ impl OptionContract {
             return None;
         }
 
-        // Check if we have enough characters after the type character for a valid strike price
-        // Strike price should be at least 1 character
         if type_pos + 1 >= occ_symbol.len() {
             warn!("OCC symbol too short for strike price: {}", occ_symbol);
             return None;
         }
 
-        // Extract the underlying symbol (everything before the date part)
         let symbol = occ_symbol[0..(type_pos - 6)].to_string();
-
-        // Extract the date part (6 characters before the option type)
         let date_str = &occ_symbol[(type_pos - 6)..type_pos];
 
         trace!("Extracted symbol: {}, date_str: {}", symbol, date_str);
-
-        // Determine option type (Call or Put)
         let option_type = match occ_symbol.chars().nth(type_pos) {
             Some('C') => OptionType::Call,
             Some('P') => OptionType::Put,
@@ -144,17 +123,11 @@ impl OptionContract {
                 return None;
             }
         };
-
-        // Extract the strike price (everything after the option type)
         let strike_str = &occ_symbol[(type_pos + 1)..];
-
-        // Ensure the strike string is not empty and can be parsed as a number
         if strike_str.is_empty() {
             warn!("Empty strike string in OCC symbol: {}", occ_symbol);
             return None;
         }
-
-        // Parse the strike price (divide by 1000 to convert from integer to decimal)
         let strike = match strike_str.parse::<u32>() {
             Ok(s) => s as f64 / 1000.0,
             Err(e) => {
@@ -165,8 +138,6 @@ impl OptionContract {
                 return None;
             }
         };
-
-        // Ensure the date string is exactly 6 characters long
         if date_str.len() != 6 {
             warn!(
                 "Date string '{}' is not exactly 6 characters long in OCC symbol: {}",
@@ -175,7 +146,6 @@ impl OptionContract {
             return None;
         }
 
-        // Parse the date components with additional validation
         let year_str = &date_str[0..2];
         let month_str = &date_str[2..4];
         let day_str = &date_str[4..6];
@@ -187,7 +157,6 @@ impl OptionContract {
             day_str
         );
 
-        // Parse year (add 2000 to get the full year)
         let year = match year_str.parse::<i32>() {
             Ok(y) => 2000 + y,
             Err(e) => {
@@ -199,7 +168,6 @@ impl OptionContract {
             }
         };
 
-        // Parse month (ensure it's between 1 and 12)
         let month = match month_str.parse::<u32>() {
             Ok(m) if m >= 1 && m <= 12 => m,
             Ok(m) => {
@@ -218,7 +186,6 @@ impl OptionContract {
             }
         };
 
-        // Parse day (ensure it's between 1 and 31)
         let day = match day_str.parse::<u32>() {
             Ok(d) if d >= 1 && d <= 31 => d,
             Ok(d) => {
@@ -237,7 +204,6 @@ impl OptionContract {
             }
         };
 
-        // Create the expiration date
         let naive_date = match chrono::NaiveDate::from_ymd_opt(year, month, day) {
             Some(d) => d,
             None => {
@@ -249,7 +215,6 @@ impl OptionContract {
             }
         };
 
-        // Add time (options expire at 4:00 PM ET)
         let naive_datetime = match naive_date.and_hms_opt(16, 0, 0) {
             Some(dt) => dt,
             None => {
@@ -261,7 +226,6 @@ impl OptionContract {
             }
         };
 
-        // Convert to UTC
         let expiration = match naive_datetime.and_local_timezone(chrono::Utc).single() {
             Some(e) => e,
             None => {
@@ -291,7 +255,6 @@ impl OptionContract {
         })
     }
 
-    /// Calculate time to expiration in years
     pub fn time_to_expiration(&self) -> f64 {
         let now = Utc::now();
         if now > self.expiration {
