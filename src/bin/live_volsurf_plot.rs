@@ -2,6 +2,7 @@ use eframe::egui;
 use egui_plot::{GridMark, Line, Plot, PlotPoints, Points, VLine};
 use options_rs::api::OptionGreeks;
 use options_rs::api::RestClient;
+use options_rs::api::{CalendarEvent, EventClass, earnings_on, dividends_on, splits_on};
 use options_rs::config::Config;
 use options_rs::error::{OptionsError, Result};
 use options_rs::models::volatility::ImpliedVolatility;
@@ -36,6 +37,7 @@ struct PlotData {
     expirations: Vec<chrono::NaiveDate>,
     underlying_price: f64,
     quotes: Vec<OptionQuoteWithIV>,
+    events: Vec<CalendarEvent>,
 }
 
 struct ExpirationsData {
@@ -47,6 +49,10 @@ struct OptionQuoteWithIV {
     quote: OptionQuote,
     implied_volatility: Option<f64>,
     greeks: Option<OptionGreeks>,
+}
+
+fn days_from_today(date: chrono::NaiveDate, today: chrono::NaiveDate) -> f64 {
+    (date - today).num_days() as f64
 }
 
 fn calculate_volatility_surface_with_iv(
@@ -177,6 +183,7 @@ struct VolatilitySurfaceApp {
     selected_strike: Option<f64>,
     quotes: Vec<OptionQuoteWithIV>,
     selected_contract: Option<OptionQuoteWithIV>,
+    events: Vec<CalendarEvent>,
 }
 
 impl VolatilitySurfaceApp {
@@ -235,6 +242,7 @@ impl eframe::App for VolatilitySurfaceApp {
             self.put_surface = plot_data.put_surface;
             self.underlying_price = Some(plot_data.underlying_price);
             self.quotes = plot_data.quotes;
+            self.events = plot_data.events;
             self.selected_contract = None;
 
             ctx.request_repaint();
@@ -505,6 +513,16 @@ impl eframe::App for VolatilitySurfaceApp {
 
                                 plot.show(ui, |plot_ui| {
                                     plot_ui.vline(VLine::new(0.0));
+
+                                    for ev in &self.events {
+                                        let x = days_from_today(ev.date, today);
+                                        let color = match ev.class_ {
+                                            EventClass::Earnings => egui::Color32::from_rgb(255, 165, 0),
+                                            EventClass::Dividend => egui::Color32::from_rgb(34, 139, 34),
+                                            EventClass::Split => egui::Color32::from_rgb(128, 0, 128),
+                                        };
+                                        plot_ui.vline(VLine::new(x).color(color).name(&ev.description));
+                                    }
 
                                     let surfaces = [
                                         (self.call_surface.as_ref(), egui::Color32::from_rgb(0, 100, 139)),
@@ -796,6 +814,24 @@ async fn run_volatility_surface_plot(
         strike_min, strike_max, underlying_price
     );
 
+    // Fetch corporate events between today and the last expiration
+    let start_date = chrono::Utc::now().date_naive();
+    let end_date = *expirations.last().unwrap_or(&start_date);
+    let mut events: Vec<CalendarEvent> = Vec::new();
+    let mut d = start_date;
+    while d <= end_date {
+        if let Ok(mut ev) = earnings_on(d).await {
+            events.append(&mut ev);
+        }
+        if let Ok(mut ev) = dividends_on(d).await {
+            events.append(&mut ev);
+        }
+        if let Ok(mut ev) = splits_on(d).await {
+            events.append(&mut ev);
+        }
+        d += chrono::Duration::days(1);
+    }
+
     let snaps = if let Some(ViewMode::TermStructure) = view_mode {
         info!(
             "Term structure view: Fetching all option chain snapshots for {}",
@@ -983,6 +1019,7 @@ async fn run_volatility_surface_plot(
         expirations,
         underlying_price,
         quotes: quotes_with_iv.clone(),
+        events,
     };
     plot_sender
         .send(plot_data)
@@ -1065,6 +1102,7 @@ async fn main() -> Result<()> {
         selected_strike: None,
         quotes: Vec::new(),
         selected_contract: None,
+        events: Vec::new(),
     };
 
     let native_options = eframe::NativeOptions {
