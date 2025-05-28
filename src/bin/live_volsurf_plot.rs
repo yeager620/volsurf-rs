@@ -1,5 +1,6 @@
 use eframe::egui;
 use egui_plot::{GridMark, Line, Plot, PlotPoints, Points, VLine};
+use std::cmp::Ordering;
 use options_rs::api::OptionGreeks;
 use options_rs::api::RestClient;
 use options_rs::config::Config;
@@ -33,6 +34,7 @@ struct PlotData {
     surface: Arc<VolatilitySurface>,
     expirations: Vec<chrono::NaiveDate>,
     underlying_price: f64,
+    quotes: Vec<OptionQuoteWithIV>,
 }
 
 struct ExpirationsData {
@@ -132,6 +134,34 @@ struct VolatilitySurfaceApp {
     underlying_price: Option<f64>,
     view_mode: ViewMode,
     selected_strike: Option<f64>,
+    quotes: Vec<OptionQuoteWithIV>,
+    selected_contract: Option<OptionQuoteWithIV>,
+}
+
+impl VolatilitySurfaceApp {
+    fn find_nearest_contract(&self, strike: f64, exp: chrono::NaiveDate) -> Option<OptionQuoteWithIV> {
+        self.quotes
+            .iter()
+            .filter(|q| q.quote.contract.expiration.date_naive() == exp)
+            .min_by(|a, b| {
+                let adiff = (a.quote.contract.strike - strike).abs();
+                let bdiff = (b.quote.contract.strike - strike).abs();
+                adiff.partial_cmp(&bdiff).unwrap_or(Ordering::Equal)
+            })
+            .cloned()
+    }
+
+    fn find_nearest_by_expiration(&self, strike: f64, exp: chrono::NaiveDate) -> Option<OptionQuoteWithIV> {
+        self.quotes
+            .iter()
+            .filter(|q| (q.quote.contract.strike - strike).abs() < f64::EPSILON)
+            .min_by(|a, b| {
+                let adiff = (a.quote.contract.expiration.date_naive() - exp).num_days().abs();
+                let bdiff = (b.quote.contract.expiration.date_naive() - exp).num_days().abs();
+                adiff.cmp(&bdiff)
+            })
+            .cloned()
+    }
 }
 
 impl eframe::App for VolatilitySurfaceApp {
@@ -150,6 +180,8 @@ impl eframe::App for VolatilitySurfaceApp {
             self.status = "Received new plot data".to_string();
             self.surface = Some(plot_data.surface);
             self.underlying_price = Some(plot_data.underlying_price);
+            self.quotes = plot_data.quotes;
+            self.selected_contract = None;
 
             ctx.request_repaint();
         }
@@ -393,6 +425,15 @@ impl eframe::App for VolatilitySurfaceApp {
                                         .radius(3.0)
                                         .color(egui::Color32::from_rgb(139, 0, 0));
                                     plot_ui.points(scatter);
+
+                                    if plot_ui.response().clicked() {
+                                        if let Some(pointer) = plot_ui.pointer_coordinate() {
+                                            let exp = self.expirations[self.selected_expiration];
+                                            if let Some(c) = self.find_nearest_contract(pointer.x, exp) {
+                                                self.selected_contract = Some(c);
+                                            }
+                                        }
+                                    }
                                 });
                             } else {
                                 ui.label("Failed to extract smile data for the selected expiration date.");
@@ -458,6 +499,15 @@ impl eframe::App for VolatilitySurfaceApp {
                                             .color(egui::Color32::from_rgb(0, 100, 139));
                                         plot_ui.points(scatter);
 
+                                        if plot_ui.response().clicked() {
+                                            if let Some(pointer) = plot_ui.pointer_coordinate() {
+                                                let day = pointer.x.round() as i64;
+                                                let exp = today + chrono::Duration::days(day);
+                                                if let Some(c) = self.find_nearest_by_expiration(strike, exp) {
+                                                    self.selected_contract = Some(c);
+                                                }
+                                            }
+                                        }
 
                                         ctx.request_repaint();
                                     });
@@ -494,6 +544,30 @@ impl eframe::App for VolatilitySurfaceApp {
                 ui.label("Press Ctrl+C in the terminal to exit the application.");
             } else {
                 ui.label("Select an expiry from the dropdown to view the volatility surface.");
+            }
+
+            if let Some(ref c) = self.selected_contract {
+                ui.separator();
+                ui.label(format!("Contract: {}", c.quote.contract.option_symbol));
+                ui.label(format!(
+                    "Type: {}  Strike: {:.2}  Exp: {}",
+                    c.quote.contract.option_type,
+                    c.quote.contract.strike,
+                    c.quote.contract.expiration.format("%Y-%m-%d")
+                ));
+                ui.label(format!(
+                    "Bid: {:.2}  Ask: {:.2}  Last: {:.2}",
+                    c.quote.bid, c.quote.ask, c.quote.last
+                ));
+                if let Some(iv) = c.implied_volatility {
+                    ui.label(format!("Implied Vol: {:.4}", iv));
+                }
+                if let Some(g) = &c.greeks {
+                    ui.label(format!(
+                        "Δ {:.4}  Γ {:.4}  Θ {:.4}  Vega {:.4}  ρ {:.4}",
+                        g.delta, g.gamma, g.theta, g.vega, g.rho
+                    ));
+                }
             }
         });
     }
@@ -893,6 +967,7 @@ async fn run_volatility_surface_plot(
         surface,
         expirations,
         underlying_price,
+        quotes: quotes_with_iv.clone(),
     };
     plot_sender
         .send(plot_data)
@@ -972,6 +1047,8 @@ async fn main() -> Result<()> {
         underlying_price: None,
         view_mode: ViewMode::VolatilitySkew,
         selected_strike: None,
+        quotes: Vec::new(),
+        selected_contract: None,
     };
 
     let native_options = eframe::NativeOptions {
