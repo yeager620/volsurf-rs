@@ -20,52 +20,52 @@ pub enum MarketData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionQuote {
-    pub s: String, // Symbol
-    pub bp: f64,   // Bid price
-    pub bs: u64,   // Bid size
-    pub ap: f64,   // Ask price
+    pub s: String,
+    pub bp: f64,
+    pub bs: u64,
+    pub ap: f64,
     #[serde(rename = "as")]
-    pub as_size: u64, // Ask size
-    pub t: DateTime<Utc>, // Timestamp
+    pub as_size: u64,
+    pub t: DateTime<Utc>,
     #[serde(default)]
-    pub up: f64, // Underlying price
-    pub option_symbol: String, // Option symbol
-    pub strike: f64, // Strike price
-    pub expiration: DateTime<Utc>, // Expiration date
-    pub option_type: OptionType, // Option type
+    pub up: f64,
+    pub option_symbol: String,
+    pub strike: f64,
+    pub expiration: DateTime<Utc>,
+    pub option_type: OptionType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionTrade {
-    pub s: String,        // Symbol
-    pub p: f64,           // Price
-    pub sz: u64,          // Size
-    pub t: DateTime<Utc>, // Timestamp
-    pub x: String,        // Exchange
+    pub s: String,
+    pub p: f64,
+    pub sz: u64,
+    pub t: DateTime<Utc>,
+    pub x: String,
     #[serde(default)]
-    pub up: f64, // Underlying price
-    pub option_symbol: String, // Option symbol
-    pub strike: f64,      // Strike price
-    pub expiration: DateTime<Utc>, // Expiration date
-    pub option_type: OptionType, // Option type
+    pub up: f64,
+    pub option_symbol: String,
+    pub strike: f64,
+    pub expiration: DateTime<Utc>,
+    pub option_type: OptionType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionBar {
-    pub s: String,        // Symbol
-    pub o: f64,           // Open price
-    pub h: f64,           // High price
-    pub l: f64,           // Low price
-    pub c: f64,           // Close price
-    pub v: u64,           // Volume
-    pub t: DateTime<Utc>, // Timestamp
-    pub vw: f64,          // Volume weighted average price
+    pub s: String,
+    pub o: f64,
+    pub h: f64,
+    pub l: f64,
+    pub c: f64,
+    pub v: u64,
+    pub t: DateTime<Utc>,
+    pub vw: f64,
     #[serde(default)]
-    pub up: f64, // Underlying price
-    pub option_symbol: String, // Option symbol
-    pub strike: f64,      // Strike price
-    pub expiration: DateTime<Utc>, // Expiration date
-    pub option_type: OptionType, // Option type
+    pub up: f64,
+    pub option_symbol: String,
+    pub strike: f64,
+    pub expiration: DateTime<Utc>,
+    pub option_type: OptionType,
 }
 
 #[derive(Debug, Serialize)]
@@ -122,16 +122,16 @@ impl Subscribe {
 }
 
 pub struct WebSocketClient {
-    config: AlpacaConfig,                        // Configuration for the Alpaca API
-    data_sender: mpsc::Sender<ModelOptionQuote>, // Channel for sending market data
-    data_receiver: Arc<Mutex<mpsc::Receiver<ModelOptionQuote>>>, // Channel for receiving market data
-    notification_tx: Arc<tokio::sync::broadcast::Sender<()>>, // Broadcast channel for notifying about new data
+    config: AlpacaConfig,
+    data_sender: mpsc::Sender<ModelOptionQuote>,
+    data_receiver: Arc<Mutex<mpsc::Receiver<ModelOptionQuote>>>,
+    notification_tx: Arc<tokio::sync::broadcast::Sender<()>>,
 }
 
 impl WebSocketClient {
     pub fn new(config: AlpacaConfig) -> Self {
         let (data_sender, data_receiver) = mpsc::channel(1000);
-        let (notification_tx, _) = tokio::sync::broadcast::channel(100); // Broadcast notification channel
+        let (notification_tx, _) = tokio::sync::broadcast::channel(100);
 
         Self {
             config,
@@ -141,7 +141,6 @@ impl WebSocketClient {
         }
     }
 
-    /// Get a notification channel that will be signaled when new data is available
     pub fn get_notification_channel(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.notification_tx.subscribe()
     }
@@ -200,7 +199,6 @@ impl WebSocketClient {
                 symbols_clone.len()
             );
 
-            // Convert to string to satisfy IntoClientRequest
             let url_str = url.to_string();
             let (ws_stream, response) = match connect_async(url_str).await {
                 Ok(conn) => conn,

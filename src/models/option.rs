@@ -20,10 +20,10 @@ impl std::fmt::Display for OptionType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionContract {
     pub symbol: String,
-    pub option_type: OptionType, // call vs put
+    pub option_type: OptionType,
     pub strike: f64,
     pub expiration: DateTime<Utc>,
-    pub option_symbol: String, // OCC format
+    pub option_symbol: String,
 }
 
 impl OptionContract {
@@ -44,8 +44,6 @@ impl OptionContract {
         }
     }
 
-    /// format: Symbol + YY + MM + DD + C/P + Strike
-    /// e.g. AAPL210115C00125000
     fn generate_occ_symbol(
         symbol: &str,
         option_type: OptionType,

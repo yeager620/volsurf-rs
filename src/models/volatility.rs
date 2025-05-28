@@ -90,7 +90,7 @@ pub struct VolatilitySurface {
     pub strikes: Vec<f64>,
     pub volatilities: Array2<f64>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
-    pub version: u64, // Version counter for tracking changes
+    pub version: u64,
 }
 
 impl VolatilitySurface {
@@ -137,7 +137,7 @@ impl VolatilitySurface {
             strikes,
             volatilities,
             timestamp: chrono::Utc::now(),
-            version: 1, // Initial version
+            version: 1,
         })
     }
 
@@ -206,7 +206,6 @@ impl VolatilitySurface {
         }
     }
 
-    /// get slice of vol surface for one expiry date
     pub fn slice_by_expiration(
         &self,
         expiration: chrono::DateTime<chrono::Utc>,
@@ -227,7 +226,6 @@ impl VolatilitySurface {
         Ok((strikes, volatilities))
     }
 
-    /// get slice of vol surface for strike
     pub fn slice_by_strike(&self, strike: f64) -> Result<(Array1<f64>, Array1<f64>)> {
         let strike_idx = self
             .strikes
@@ -259,7 +257,6 @@ impl VolatilitySurface {
         Ok((times, volatilities))
     }
 
-    /// Update the volatility surface with new implied volatility data
     pub fn update(&mut self, new_ivs: &[ImpliedVolatility]) -> Result<bool> {
         if new_ivs.is_empty() {
             return Ok(false);
@@ -342,7 +339,6 @@ impl VolatilitySurface {
         Ok(updated)
     }
 
-    /// Get the current version of the volatility surface
     pub fn get_version(&self) -> u64 {
         self.version
     }

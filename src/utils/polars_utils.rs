@@ -1,17 +1,17 @@
-use crate::models::{OptionContract, OptionQuote, OptionType};
-use crate::models::volatility::{ImpliedVolatility, VolatilitySurface};
 use crate::error::{OptionsError, Result};
+use crate::models::volatility::{ImpliedVolatility, VolatilitySurface};
+use crate::models::{OptionContract, OptionQuote, OptionType};
 use chrono::{DateTime, Utc};
 use polars::prelude::*;
 use std::path::Path;
 
-/// Convert a vector of OptionQuote to a Polars DataFrame
 pub fn quotes_to_dataframe(quotes: &[OptionQuote]) -> Result<DataFrame> {
     if quotes.is_empty() {
-        return Err(OptionsError::Other("Cannot create DataFrame from empty quotes".to_string()));
+        return Err(OptionsError::Other(
+            "Cannot create DataFrame from empty quotes".to_string(),
+        ));
     }
 
-    // Extract data into column vectors
     let mut symbols = Vec::with_capacity(quotes.len());
     let mut option_symbols = Vec::with_capacity(quotes.len());
     let mut option_types = Vec::with_capacity(quotes.len());
@@ -28,7 +28,11 @@ pub fn quotes_to_dataframe(quotes: &[OptionQuote]) -> Result<DataFrame> {
     for quote in quotes {
         symbols.push(quote.contract.symbol.clone());
         option_symbols.push(quote.contract.option_symbol.clone());
-        option_types.push(if quote.contract.is_call() { "Call" } else { "Put" });
+        option_types.push(if quote.contract.is_call() {
+            "Call"
+        } else {
+            "Put"
+        });
         strikes.push(quote.contract.strike);
         expirations.push(quote.contract.expiration.timestamp_millis());
         bids.push(quote.bid);
@@ -40,7 +44,6 @@ pub fn quotes_to_dataframe(quotes: &[OptionQuote]) -> Result<DataFrame> {
         timestamps.push(quote.timestamp.timestamp_millis());
     }
 
-    // Create Series for each column
     let df = DataFrame::new(vec![
         Series::new("symbol", symbols),
         Series::new("option_symbol", option_symbols),
@@ -60,12 +63,10 @@ pub fn quotes_to_dataframe(quotes: &[OptionQuote]) -> Result<DataFrame> {
     Ok(df)
 }
 
-/// Convert a Polars DataFrame back to a vector of OptionQuote
 pub fn dataframe_to_quotes(df: &DataFrame) -> Result<Vec<OptionQuote>> {
     let n_rows = df.height();
     let mut quotes = Vec::with_capacity(n_rows);
 
-    // Get column references
     let symbols = df.column("symbol")?;
     let option_symbols = df.column("option_symbol")?;
     let option_types = df.column("option_type")?;
@@ -102,7 +103,6 @@ pub fn dataframe_to_quotes(df: &DataFrame) -> Result<Vec<OptionQuote>> {
         let timestamp = DateTime::<Utc>::from_timestamp_millis(timestamp_millis)
             .ok_or_else(|| OptionsError::Other("Invalid timestamp".to_string()))?;
 
-        // Create contract
         let contract = OptionContract {
             symbol,
             option_type,
@@ -111,7 +111,6 @@ pub fn dataframe_to_quotes(df: &DataFrame) -> Result<Vec<OptionQuote>> {
             option_symbol,
         };
 
-        // Create quote
         let quote = OptionQuote {
             contract,
             bid,
@@ -129,13 +128,13 @@ pub fn dataframe_to_quotes(df: &DataFrame) -> Result<Vec<OptionQuote>> {
     Ok(quotes)
 }
 
-/// Convert a vector of ImpliedVolatility to a Polars DataFrame
 pub fn implied_volatilities_to_dataframe(ivs: &[ImpliedVolatility]) -> Result<DataFrame> {
     if ivs.is_empty() {
-        return Err(OptionsError::Other("Cannot create DataFrame from empty implied volatilities".to_string()));
+        return Err(OptionsError::Other(
+            "Cannot create DataFrame from empty implied volatilities".to_string(),
+        ));
     }
 
-    // Extract data into column vectors
     let mut symbols = Vec::with_capacity(ivs.len());
     let mut option_symbols = Vec::with_capacity(ivs.len());
     let mut option_types = Vec::with_capacity(ivs.len());
@@ -162,7 +161,6 @@ pub fn implied_volatilities_to_dataframe(ivs: &[ImpliedVolatility]) -> Result<Da
         vegas.push(iv.vega);
     }
 
-    // Create Series for each column
     let df = DataFrame::new(vec![
         Series::new("symbol", symbols),
         Series::new("option_symbol", option_symbols),
@@ -181,18 +179,15 @@ pub fn implied_volatilities_to_dataframe(ivs: &[ImpliedVolatility]) -> Result<Da
     Ok(df)
 }
 
-/// Convert a VolatilitySurface to a Polars DataFrame
 pub fn volatility_surface_to_dataframe(surface: &VolatilitySurface) -> Result<DataFrame> {
     let n_expirations = surface.expirations.len();
     let n_strikes = surface.strikes.len();
     let total_rows = n_expirations * n_strikes;
 
-    // Create column vectors
     let mut expirations = Vec::with_capacity(total_rows);
     let mut strikes = Vec::with_capacity(total_rows);
     let mut volatilities = Vec::with_capacity(total_rows);
 
-    // Flatten the 2D volatility surface into a long-format DataFrame
     for (i, &expiration) in surface.expirations.iter().enumerate() {
         for (j, &strike) in surface.strikes.iter().enumerate() {
             expirations.push(expiration.timestamp_millis());
@@ -201,7 +196,6 @@ pub fn volatility_surface_to_dataframe(surface: &VolatilitySurface) -> Result<Da
         }
     }
 
-    // Create DataFrame
     let df = DataFrame::new(vec![
         Series::new("expiration", expirations),
         Series::new("strike", strikes),
@@ -212,23 +206,24 @@ pub fn volatility_surface_to_dataframe(surface: &VolatilitySurface) -> Result<Da
     Ok(df)
 }
 
-/// Create a VolatilitySurface from a Polars DataFrame
 pub fn dataframe_to_volatility_surface(df: &DataFrame, symbol: &str) -> Result<VolatilitySurface> {
-    // Get unique expirations and strikes
-    let expirations_series = df.column("expiration")
+    let expirations_series = df
+        .column("expiration")
         .map_err(|e| OptionsError::Other(format!("Failed to get 'expiration' column: {}", e)))?;
-    let strikes_series = df.column("strike")
+    let strikes_series = df
+        .column("strike")
         .map_err(|e| OptionsError::Other(format!("Failed to get 'strike' column: {}", e)))?;
 
-    let unique_expirations = expirations_series.unique()
+    let unique_expirations = expirations_series
+        .unique()
         .map_err(|e| OptionsError::Other(format!("Failed to get unique expirations: {}", e)))?;
-    let unique_strikes = strikes_series.unique()
+    let unique_strikes = strikes_series
+        .unique()
         .map_err(|e| OptionsError::Other(format!("Failed to get unique strikes: {}", e)))?;
 
     let n_expirations = unique_expirations.len();
     let n_strikes = unique_strikes.len();
 
-    // Convert to vectors
     let mut expirations = Vec::with_capacity(n_expirations);
     for i in 0..n_expirations {
         let millis = unique_expirations.i64()?.get(i).unwrap_or(0);
@@ -245,11 +240,10 @@ pub fn dataframe_to_volatility_surface(df: &DataFrame, symbol: &str) -> Result<V
     }
     strikes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less));
 
-    // Create volatility matrix
     let mut volatilities = ndarray::Array2::from_elem((n_expirations, n_strikes), f64::NAN);
 
-    // Fill in volatility values
-    let volatility_series = df.column("volatility")
+    let volatility_series = df
+        .column("volatility")
         .map_err(|e| OptionsError::Other(format!("Failed to get 'volatility' column: {}", e)))?;
 
     for i in 0..df.height() {
@@ -277,7 +271,6 @@ pub fn dataframe_to_volatility_surface(df: &DataFrame, symbol: &str) -> Result<V
     })
 }
 
-/// Cache a DataFrame to disk in Parquet format
 pub fn cache_dataframe_to_parquet(df: &DataFrame, path: &str) -> Result<()> {
     let file = std::fs::File::create(path)
         .map_err(|e| OptionsError::Other(format!("Failed to create file: {}", e)))?;
@@ -290,10 +283,12 @@ pub fn cache_dataframe_to_parquet(df: &DataFrame, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Load a cached DataFrame from a Parquet file
 pub fn load_dataframe_from_parquet(path: &str) -> Result<DataFrame> {
     if !Path::new(path).exists() {
-        return Err(OptionsError::Other(format!("Parquet file not found: {}", path)));
+        return Err(OptionsError::Other(format!(
+            "Parquet file not found: {}",
+            path
+        )));
     }
 
     let df = LazyFrame::scan_parquet(path, Default::default())
@@ -304,7 +299,6 @@ pub fn load_dataframe_from_parquet(path: &str) -> Result<DataFrame> {
     Ok(df)
 }
 
-/// Cache a DataFrame to disk in Arrow IPC format
 pub fn cache_dataframe_to_ipc(df: &DataFrame, path: &str) -> Result<()> {
     let file = std::fs::File::create(path)
         .map_err(|e| OptionsError::Other(format!("Failed to create file: {}", e)))?;
@@ -317,7 +311,6 @@ pub fn cache_dataframe_to_ipc(df: &DataFrame, path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Load a cached DataFrame from an Arrow IPC file
 pub fn load_dataframe_from_ipc(path: &str) -> Result<DataFrame> {
     if !Path::new(path).exists() {
         return Err(OptionsError::Other(format!("IPC file not found: {}", path)));
@@ -331,29 +324,19 @@ pub fn load_dataframe_from_ipc(path: &str) -> Result<DataFrame> {
     Ok(df)
 }
 
-/// Process option quotes using Polars' Lazy API for optimized performance
-/// This function demonstrates how to use the Lazy API for query optimization
 pub fn process_quotes_lazy(quotes: &[OptionQuote]) -> Result<DataFrame> {
-    // Convert quotes to DataFrame
     let df = quotes_to_dataframe(quotes)?;
 
-    // Create a LazyFrame from the DataFrame
     let lf = df.lazy();
 
-    // Example of a complex query pipeline that benefits from Polars' query optimization
     let result = lf
-        // Filter for quotes with non-zero bid and ask
-        .filter(
-            col("bid").gt(lit(0.0))
-            .and(col("ask").gt(lit(0.0)))
-        )
-        // Add calculated columns
+        .filter(col("bid").gt(lit(0.0)).and(col("ask").gt(lit(0.0))))
         .with_columns([
             ((col("bid") + col("ask")) / lit(2.0)).alias("mid_price"),
             (col("ask") - col("bid")).alias("spread"),
-            ((col("ask") - col("bid")) / ((col("bid") + col("ask")) / lit(2.0))).alias("spread_pct"),
+            ((col("ask") - col("bid")) / ((col("bid") + col("ask")) / lit(2.0)))
+                .alias("spread_pct"),
         ])
-        // Group by symbol and option type
         .group_by([col("symbol"), col("option_type")])
         .agg([
             col("strike").mean().alias("avg_strike"),
@@ -363,12 +346,14 @@ pub fn process_quotes_lazy(quotes: &[OptionQuote]) -> Result<DataFrame> {
             col("volume").sum().alias("total_volume"),
             col("option_symbol").count().alias("num_contracts"),
         ])
-        // Sort by symbol and option type
-        .sort_by_exprs(vec![col("symbol"), col("option_type")], vec![false, false], false, false)
-        // Cache the result to avoid recomputation
+        .sort_by_exprs(
+            vec![col("symbol"), col("option_type")],
+            vec![false, false],
+            false,
+            false,
+        )
         .cache();
 
-    // Execute the query and materialize the result
     let result_df = result
         .collect()
         .map_err(|e| OptionsError::Other(format!("Failed to execute lazy query: {}", e)))?;
@@ -376,19 +361,15 @@ pub fn process_quotes_lazy(quotes: &[OptionQuote]) -> Result<DataFrame> {
     Ok(result_df)
 }
 
-/// Calculate implied volatility surface using Polars for performance
 pub fn calculate_volatility_surface_with_polars(
-    quotes: &[OptionQuote], 
-    symbol: &str, 
-    risk_free_rate: f64
+    quotes: &[OptionQuote],
+    symbol: &str,
+    risk_free_rate: f64,
 ) -> Result<VolatilitySurface> {
-    // Convert quotes to DataFrame
     let df = quotes_to_dataframe(quotes)?;
 
-    // Create a LazyFrame from the DataFrame
     let lf = df.lazy();
 
-    // Filter for valid quotes (non-zero bid and ask)
     let filtered_lf = lf
         .filter(col("bid").gt(lit(0.0)).and(col("ask").gt(lit(0.0))))
         .with_columns([
@@ -396,17 +377,18 @@ pub fn calculate_volatility_surface_with_polars(
             ((col("ask") - col("bid")) / col("mid_price")).alias("spread_pct"),
         ])
         .filter(col("spread_pct").lt(lit(0.05)))
-        .filter(col("volume").gt_eq(lit(10i64)).and(col("open_interest").gt_eq(lit(10i64))));
+        .filter(
+            col("volume")
+                .gt_eq(lit(10i64))
+                .and(col("open_interest").gt_eq(lit(10i64))),
+        );
 
-    // Materialize the filtered DataFrame
     let filtered_df = filtered_lf
         .collect()
         .map_err(|e| OptionsError::Other(format!("Failed to filter quotes: {}", e)))?;
 
-    // Convert back to quotes for IV calculation
     let filtered_quotes = dataframe_to_quotes(&filtered_df)?;
 
-    // Calculate implied volatilities
     let mut ivs = Vec::new();
     for q in &filtered_quotes {
         if let Ok(iv) = ImpliedVolatility::from_quote(q, risk_free_rate, 0.0) {
@@ -420,10 +402,8 @@ pub fn calculate_volatility_surface_with_polars(
         ));
     }
 
-    // Convert IVs to DataFrame for efficient processing
     let _ivs_df = implied_volatilities_to_dataframe(&ivs)?;
 
-    // Create volatility surface
     let surface = VolatilitySurface::new(symbol.to_string(), &ivs)?;
 
     Ok(surface)

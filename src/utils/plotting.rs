@@ -240,7 +240,6 @@ pub fn plot_volatility_term_structure<P: AsRef<Path>>(
     Ok(())
 }
 
-/// 3D plot of volatility vs. strike and time to expiration
 pub fn plot_volatility_surface<P: AsRef<Path>>(
     surface: &VolatilitySurface,
     output_path: P,
@@ -306,12 +305,10 @@ pub fn plot_volatility_surface_in_memory(surface: &VolatilitySurface) -> Result<
     let vol_min = (min_vol - 0.1 * vol_range).max(0.0);
     let vol_max = max_vol + 0.1 * vol_range;
 
-    // Create a buffer for the image data
     let width = 1200u32;
     let height = 900u32;
     let mut buffer = vec![0u8; (width * height * 4) as usize];
     {
-        // Create a backend that writes to the buffer
         let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
         root.fill(&WHITE)
             .map_err(|e| OptionsError::Other(e.to_string()))?;
