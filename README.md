@@ -1,4 +1,4 @@
-# Options-RS
+# volsurf-rs
 
 Barebones volatility surface visualization tool built in rust. Uses alpaca markets api.
 
